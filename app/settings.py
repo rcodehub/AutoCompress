@@ -13,7 +13,7 @@ SETTINGS_PATH = os.path.join(CONFIG_DIR, "settings.json")
 LEVELS = {0: "Store (no compression)", 1: "Fastest", 2: "Fast", 3: "Normal", 4: "Good", 5: "Best"}
 DICTIONARIES = ("auto", "32m", "64m", "128m", "256m", "512m", "1g")
 CHECKSUM_MODES = ("filename", "sfv", "none")
-SOURCE_ACTIONS = ("delete", "move", "keep")
+SOURCE_ACTIONS = ("recycle", "delete", "move", "keep")
 LAYOUTS = ("flat", "mirror")
 
 DEFAULTS = {
@@ -43,7 +43,7 @@ DEFAULTS = {
     "checksum_mode": "filename",      # filename: "name [CRC32].rar" | sfv: name.sfv next to the archive | none
     "checksum_existing": False,       # also add the checksum to .rar files that are already there
 
-    "source_action": "delete",        # what to do with a folder after it was compressed and verified: delete | move | keep
+    "source_action": "recycle",       # after it was compressed and verified: recycle (share's .Recycle.Bin) | delete | move | keep
     "move_dir": "",
 
     "set_perms": True,                # chmod the archives that are created
@@ -68,6 +68,11 @@ def env_defaults():
     move = mounts.suggested_move_dir()
     if move:
         d.update(move_dir=move, source_action="move")
+    else:
+        # default: the share's Recycle Bin - but only when it can be reached; otherwise keep the folders (never delete by surprise)
+        mnt = mounts.list_mounts(CONFIG_DIR)
+        if any(mounts.recycle_target(os.path.join(p, "x"), mnt)[1] for p in d["sources"]) or not d["sources"]:
+            d["source_action"] = "keep"
     return d
 
 

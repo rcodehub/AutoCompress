@@ -31,7 +31,7 @@ if not RAR:
 
 def base_cfg(**kw):
     cfg = dict(settings.DEFAULTS)
-    cfg.update(min_age_minutes=0, recovery_percent=15, level=5)
+    cfg.update(min_age_minutes=0, recovery_percent=15, level=5, source_action="delete")
     cfg.update(kw)
     clean, errors = settings.validate(cfg)
     assert not errors, errors
@@ -378,6 +378,60 @@ def test_oneoff():
     shutil.rmtree(work)
 
 
+def fake_mount(path, root, fstype="fuse.shfs", device="shfs"):
+    return {"path": path, "fstype": fstype, "root": root, "device": device, "host": None, "config": False, "writable": True}
+
+
+def test_recycle():
+    import mounts
+    # path resolution
+    m_share = [fake_mount("/source", "/Media")]
+    check("recycle path: mapped share root", mounts.recycle_target("/source/Show", m_share) == ("/source/.Recycle.Bin", None))
+    check("recycle path: sub-folders keep their tree", mounts.recycle_target("/source/A/B/Show", m_share) == ("/source/.Recycle.Bin/A/B", None))
+    m_all = [fake_mount("/mnt/user", "/")]
+    check("recycle path: all shares mapped", mounts.recycle_target("/mnt/user/Media/A/Show", m_all) == ("/mnt/user/Media/.Recycle.Bin/A", None))
+    check("recycle path: top of all shares refused", mounts.recycle_target("/mnt/user", m_all)[1] is not None)
+    m_sub = [fake_mount("/source", "/Media/Inbox"), fake_mount("/mnt/user", "/")]
+    check("recycle path: share root found through the all-shares mapping",
+          mounts.recycle_target("/source/Show", m_sub) == ("/mnt/user/Media/.Recycle.Bin/Inbox", None), mounts.recycle_target("/source/Show", m_sub))
+    check("recycle path: unreachable share root gives a reason", mounts.recycle_target("/source/Show", m_sub[:1])[1] is not None)
+    check("recycle path: unmapped path gives a reason", mounts.recycle_target("/elsewhere/x", m_sub)[1] is not None)
+
+    # the engine: fake the mapping so a temp folder acts as a share root
+    work, eng = fresh()
+    share = os.path.join(work, "Media")
+    make_folders(share)
+    real = mounts.list_mounts
+    mounts.list_mounts = lambda *a, **k: [fake_mount(share, "/Media")]
+    try:
+        run(eng, base_cfg(sources=[share], source_action="recycle"))
+        check("recycle: folder moved into <share>/.Recycle.Bin", os.path.isfile(f"{share}/.Recycle.Bin/My Show/sub/a.txt")
+              and os.path.isdir(f"{share}/.Recycle.Bin/Plain") and not os.path.exists(f"{share}/Plain"), os.listdir(share))
+        check("recycle: archives created", len(rars(share)) == 2, rars(share))
+        make_folders(share)
+        os.remove(f"{share}/" + [x for x in rars(share) if x.startswith("Plain")][0])
+        run(eng, base_cfg(sources=[share], source_action="recycle"))
+        check("recycle: a clash in the bin gets a .1 suffix", os.path.isdir(f"{share}/.Recycle.Bin/Plain.1"), os.listdir(f"{share}/.Recycle.Bin"))
+        s = eng.snapshot()
+        check("recycle: .Recycle.Bin itself is never compressed", not any(x.startswith(".Recycle") for x in rars(share)))
+    finally:
+        mounts.list_mounts = real
+    shutil.rmtree(work)
+
+    # not reachable: the run fails up front and nothing is touched
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    make_folders(src)
+    mounts.list_mounts = lambda *a, **k: [fake_mount(src, "/Media/Inbox")]
+    try:
+        s = run(eng, base_cfg(sources=[src], source_action="recycle"))
+    finally:
+        mounts.list_mounts = real
+    check("recycle: unreachable share root fails before touching anything",
+          s["result"] == "error" and os.path.isdir(f"{src}/Plain") and not rars(src), (s["result"], s["message"]))
+    shutil.rmtree(work)
+
+
 def test_settings():
     cfg = settings.DEFAULTS
     c, e = settings.validate({**cfg, "sources": ["/a"], "output_dir": "/a/out"})
@@ -397,13 +451,14 @@ def test_settings():
     check("settings: password can be removed", cleared["password"] == "")
     saved, _ = settings.save({**cfg, "sources": ["/a"], "password": "hunter2"})
     check("settings: public view hides the password", "password" not in settings.public(saved) and settings.public(saved)["password_set"] is True)
+    check("settings: default folder action is the Recycle Bin", settings.DEFAULTS["source_action"] == "recycle")
     check("settings: file is private (0600)", stat.S_IMODE(os.stat(settings.SETTINGS_PATH).st_mode) == 0o600)
     shutil.rmtree(d)
 
 
 for t in (test_basic_filename_crc, test_sfv_and_none, test_move_output_mirror, test_dry_run_age_and_skips,
           test_volumes_password_excludes, test_safety_nets, test_existing_archives_and_verify, test_parallel,
-          test_oneoff, test_settings):
+          test_oneoff, test_recycle, test_settings):
     print(f"--- {t.__name__}")
     try:
         t()

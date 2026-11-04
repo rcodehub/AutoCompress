@@ -345,8 +345,9 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
         <div class="hint">Runs <span class="path">rar t</span> on the finished archive and checks that it holds as many files as the folder. The folder is only touched after this succeeds. A folder that changed while it was being compressed is never touched.</div></div></div>
       <div id="verifyWarn"></div>
       <div class="field"><label for="source_action">The original folder</label>
-        <select id="source_action"><option value="delete">Delete it</option><option value="move">Move it to the move folder</option><option value="keep">Keep it</option></select>
-        <div class="hint">With <b>Keep</b>, a folder is not compressed again while an archive with its name exists.</div></div>
+        <select id="source_action"><option value="recycle">Move it to the share's Recycle Bin (.Recycle.Bin)</option><option value="delete">Delete it</option><option value="move">Move it to the move folder</option><option value="keep">Keep it</option></select>
+        <div class="hint"><b>Recycle Bin</b> puts the folder in <span class="path">.Recycle.Bin</span> at the root of its share, in the same place as files deleted over SMB when the Unraid Recycle Bin plugin is installed (the plugin then lists it and empties it on its schedule). The share itself, or all shares (<span class="path">/mnt/user</span>), must be mapped into the container. With <b>Keep</b>, a folder is not compressed again while an archive with its name exists.</div></div>
+      <div id="recycleStatus"></div>
       <div class="field" id="moveField"><label for="move_dir">Move folder</label>
         <div class="row"><input type="text" id="move_dir" placeholder="/trash"><button class="small" id="browseMove">Browse</button></div>
         <div id="moveStatus"></div>
@@ -468,7 +469,7 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
     <div class="field"><label for="oneMode">What to compress</label>
       <select id="oneMode"><option value="folder">This folder, as one archive</option><option value="children">Each sub-folder of this folder, as its own archive</option></select></div>
     <div class="field"><label for="oneAction">After compressing</label>
-      <select id="oneAction"><option value="">Use the setting</option><option value="delete">Delete the folder</option><option value="move">Move the folder to the move folder</option><option value="keep">Keep the folder</option></select></div>
+      <select id="oneAction"><option value="">Use the setting</option><option value="recycle">Move the folder to the share's Recycle Bin</option><option value="delete">Delete the folder</option><option value="move">Move the folder to the move folder</option><option value="keep">Keep the folder</option></select></div>
     <div class="field"><label for="oneOut">Put the archive in <span class="muted">(optional, otherwise the setting)</span></label>
       <div class="row"><input type="text" id="oneOut" spellcheck="false" placeholder="same as the Settings page"><button class="small" id="oneOutBrowse" type="button">Browse...</button></div></div>
     <div id="oneErr" class="missing" hidden></div>
@@ -682,7 +683,7 @@ $("btnStop").addEventListener("click", async () => { await post("/api/stop"); po
 $("btnLogout").addEventListener("click", () => { location.href = "/logout"; });
 
 // ---- settings
-let current = null;
+let current = null, recycleProblems = [];
 
 function statusLine(info) {
   if (!info) return null;
@@ -807,6 +808,7 @@ async function loadSettings() {
   for (const [id, key, info] of [["moveStatus", "move_dir", d.move_info], ["outStatus", "output_dir", d.output_info]]) {
     const holder = $(id); holder.replaceChildren(); const l = s[key] ? statusLine(info) : null; if (l) holder.append(l);
   }
+  recycleProblems = d.recycle_problems || [];
   sync();
   loadMounts().catch(() => {});
 
@@ -831,6 +833,9 @@ async function loadSettings() {
 }
 
 function sync() {
+  const rs = $("recycleStatus"); rs.replaceChildren();
+  if ($("source_action").value === "recycle" && recycleProblems.length)
+    rs.append(h("div", { class: "missing" }, "The Recycle Bin cannot be reached for: " + recycleProblems.join(" | ") + ". Map the share itself or all shares (/mnt/user) into the container, or pick another action - scans stop with an error until then."));
   $("moveField").style.display = $("source_action").value === "move" ? "" : "none";
   $("layoutField").style.display = $("output_dir").value.trim() ? "" : "none";
   const split = parseInt($("volume_mb").value, 10) > 0;
@@ -838,7 +843,7 @@ function sync() {
     ? "Split archives cannot have the CRC in their names (renaming a part would break the set), so they get an SFV file instead." : "";
   const vw = $("verifyWarn"); vw.replaceChildren();
   if (!$("verify").checked && $("source_action").value !== "keep")
-    vw.append(h("div", { class: "banner warn" }, "Testing is off: the original folder will be " + ($("source_action").value === "delete" ? "deleted" : "moved") + " without checking that the archive is good."));
+    vw.append(h("div", { class: "banner warn" }, "Testing is off: the original folder will be " + ($("source_action").value === "delete" ? "deleted" : $("source_action").value === "recycle" ? "moved to the Recycle Bin" : "moved") + " without checking that the archive is good."));
 }
 for (const id of ["source_action", "output_dir", "volume_mb", "checksum_mode", "verify"]) { $(id).addEventListener("change", sync); $(id).addEventListener("input", sync); }
 $("addSource").addEventListener("click", () => $("sources").append(sourceRow("")));

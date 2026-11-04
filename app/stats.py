@@ -70,7 +70,7 @@ class Stats:
                 d["bytes_in"] += bytes_in
                 d["bytes_out"] += bytes_out
             tot["seconds"] += seconds
-            tot[{"delete": "freed", "move": "moved"}.get(action, "kept")] += bytes_in
+            tot[{"delete": "freed", "move": "moved", "recycle": "moved"}.get(action, "kept")] += bytes_in
             tot["volumes"] += volumes if volumes > 1 else 0
             if checksum == "filename":
                 tot["crc_names"] += 1

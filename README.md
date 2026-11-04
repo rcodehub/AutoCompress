@@ -5,7 +5,7 @@ A Docker container for Unraid (or any Docker host) that scans folders on a sched
 - compression level, solid archives, dictionary size, recovery record, RAR threads, optional split volumes and optional password,
 - tests each archive and compares it with the folder before anything is removed,
 - adds a **CRC32** to the file name (`Show [14337E9B].rar`) or writes an **SFV** file next to the archive,
-- then **deletes** the original folder, **moves** it to a trash folder, or keeps it.
+- then moves the original folder to the share's **Recycle Bin**, **deletes** it, **moves** it to a trash folder, or keeps it.
 
 Everything is set up in the web UI, which has a live status page, settings, scan history, statistics and themes.
 
@@ -40,6 +40,12 @@ then **Docker → Add Container → Template: my-AutoCompress**.
 
 Only change the *Host Path* side of the paths. On first start `/source` is set as the source; if `/output` is mapped the archives go there, and if `/trash` is mapped compressed folders are moved there. Everything else is configured in the web UI and saved in `/data`.
 
+### Recycle Bin
+
+By default a compressed folder is moved to `.Recycle.Bin` at the root of its share, with its sub-folder path kept (`<share>/.Recycle.Bin/<path inside the share>`). This is where the Unraid **Recycle Bin** plugin keeps files deleted over SMB, so the plugin lists them and empties them on its own schedule. The plugin does not have to be installed; without it the folder simply waits in `.Recycle.Bin` until you remove it. A name that already exists there gets `.1`, `.2`, ... added.
+
+The share's root must be reachable inside the container: map the **share itself** as the source (instant move), or map **all shares** (`/mnt/user`, see the table above). If it is not reachable the run stops before touching anything and Settings explains why. On a fresh install where it is not reachable the folders are kept instead of deleted.
+
 ## Web UI
 
 - **Status** – next/last scan, progress, what each job is doing (with percent), problems and a live log. Buttons: **Run now**, **Dry run** (shows what would happen without changing anything), **Compress folder…**, **Stop**, **Check CRCs**.
@@ -66,7 +72,7 @@ Only change the *Host Path* side of the paths. On first start `/source` is set a
 | Leave out of the archives | – | File/folder names with wildcards, matched at every level (`Thumbs.db`, `*.tmp`) |
 | Password / encrypt file names | none / on | Stored in plain text in `/data/settings.json`, never sent to the browser. **A lost password means the archives cannot be opened** |
 | Test the archive and compare it with the folder | on | `rar t`, plus a check that the archive holds as many files as the folder |
-| The original folder | delete | Delete, move to the move folder, or keep |
+| The original folder | Recycle Bin | Move to the share's `.Recycle.Bin`, delete, move to the move folder, or keep |
 | Move folder | `/trash` if mapped | Layout: `<move folder>/<source name>/<folder>`; name clashes get `.1`, `.2` |
 | Sub-folders that are never compressed | `@eaDir`, `.Recycle.Bin`, `#recycle`, `.Trash*` | Wildcards allowed |
 | Scan automatically / interval | off / 60 min | Interval counts from the end of the previous scan |
@@ -85,7 +91,7 @@ Each archive is built in a hidden work folder (`.autocompress-…`) next to its 
 1. **tested** with `rar t`, and the number of files inside is compared with the folder (skipped when *Leave out of the archives* is used);
 2. the **CRC32** is calculated and the archive is moved into place under its final name (or an SFV file is written);
 3. the folder is checked again – **if anything in it changed while it was compressing, the archive is discarded and the folder is left alone**, to be tried again on the next scan;
-4. only then is the folder deleted or moved.
+4. only then is the folder moved to the Recycle Bin, deleted or moved.
 
 Nothing is ever overwritten. A folder that fails is left untouched and listed with the reason; scheduled scans do not retry it until its contents change, **Run now** always does. Symbolic links inside a folder are stored as links, not followed.
 

@@ -297,6 +297,8 @@ def api_settings():
         sources_info={p: mounts.path_info(p, mnt) for p in cfg["sources"]},
         move_info=mounts.path_info(cfg["move_dir"], mnt) if cfg["move_dir"] else None,
         output_info=mounts.path_info(cfg["output_dir"], mnt) if cfg["output_dir"] else None,
+        recycle_problems=[f"{p}: {why}" for p in cfg["sources"]
+                          for why in [mounts.recycle_target(os.path.join(p, "x"), mnt)[1]] if why],
         auth_enabled=AUTH_ON,
     )
 

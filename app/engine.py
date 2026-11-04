@@ -22,6 +22,7 @@ import zlib
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
+import mounts
 from stats import Stats
 
 WORK_PREFIX = ".autocompress-"          # private per-archive work folders
@@ -345,6 +346,13 @@ class Engine:
             self._finish(trigger, dry_run, verify_only, result, message)
 
     def _check_folders(self, cfg, sources):
+        if cfg["source_action"] == "recycle":
+            self._mounts = mounts.list_mounts(os.path.dirname(self.failed_path))
+            for s in sources:
+                _, why = mounts.recycle_target(os.path.join(s, "x"), self._mounts)
+                if why:
+                    raise RuntimeError(f"Cannot use the Recycle Bin for {s}: {why}. "
+                                       "Choose another action for the original folder in Settings.")
         mv = cfg["move_dir"]
         if cfg["source_action"] == "move":
             if not mv:
@@ -518,7 +526,8 @@ class Engine:
 
     def _dry(self, job, cfg):
         act = {"delete": "delete the folder", "keep": "keep the folder",
-               "move": f"move the folder to {cfg['move_dir']}"}[cfg["source_action"]]
+               "move": f"move the folder to {cfg['move_dir']}",
+               "recycle": "move the folder to the share's .Recycle.Bin"}[cfg["source_action"]]
         tag = {"filename": " [CRC32]", "sfv": "", "none": ""}[cfg["checksum_mode"]]
         extra = " + .sfv" if cfg["checksum_mode"] == "sfv" else ""
         self.log("info", f"[dry run] would compress {job['path']} ({job['files']} files, {human(job['bytes'])}) -> "
@@ -759,7 +768,9 @@ class Engine:
                 shutil.rmtree(path)
             elif action == "move":
                 self._move_dir(path, job["root"], cfg)
-        except OSError as e:
+            elif action == "recycle":
+                self._recycle_dir(path, cfg)
+        except (OSError, RuntimeError) as e:
             problem, action = f"the archive was created and tested, but the folder could not be {'removed' if action == 'delete' else 'moved'}: {e}", "keep"
         with self.lock:
             self.status["compressed"] += 1
@@ -770,9 +781,31 @@ class Engine:
         ratio = f", {100 * (1 - bytes_out / job['bytes']):.0f}% smaller" if job["bytes"] and bytes_out < job["bytes"] else ""
         self.log("info", f"Done: {name} -> {final_names[0]}{' (+' + str(len(vols) - 1) + ' volumes)' if len(vols) > 1 else ''}"
                          f" - {human(job['bytes'])} -> {human(bytes_out)}{ratio} in {secs:.0f}s"
-                         f"{', folder ' + ('deleted' if action == 'delete' else 'moved' if action == 'move' else 'kept')}")
+                         f"{', folder ' + {'delete': 'deleted', 'move': 'moved', 'recycle': 'moved to the Recycle Bin'}.get(action, 'kept')}")
         if problem:
             self._fail(path, problem, warn=True)
+
+    def _recycle_dir(self, src, cfg):
+        """Move into <share>/.Recycle.Bin/<path inside the share>, where the Unraid Recycle Bin plugin keeps
+        files deleted over SMB (so it is listed and emptied by the plugin)."""
+        parent, why = mounts.recycle_target(src, self._mounts)
+        if why:
+            raise RuntimeError(f"Recycle Bin not usable: {why}")
+        dest = os.path.join(parent, os.path.basename(src))
+        with self.move_lock:
+            missing, p = [], parent
+            while not os.path.isdir(p):
+                missing.append(p)
+                p = os.path.dirname(p)
+            for m in reversed(missing):
+                os.mkdir(m)
+                self._apply_perm(m, True, cfg)
+            if os.path.exists(dest):                 # never overwrite something already in the bin
+                n = 1
+                while os.path.exists(f"{dest}.{n}"):
+                    n += 1
+                dest = f"{dest}.{n}"
+            shutil.move(src, dest)
 
     def _move_dir(self, src, root, cfg):
         """Move into move_dir/<source folder name>/<folder name>."""
