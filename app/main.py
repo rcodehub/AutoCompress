@@ -309,6 +309,45 @@ def api_mounts():
     return jsonify(mounts=mounts.list_mounts(CONFIG_DIR), config_dir=CONFIG_DIR)
 
 
+def recycle_report(path, mnt):
+    """Where the Recycle Bin for `path` is, on the server and in the container, and what is in it."""
+    root, why = mounts.recycle_root(os.path.join(path, "x"), mnt)
+    out = {"source": path, "ok": not why, "why": why, "bin": root, "host": None, "exists": False, "items": None}
+    if root:
+        out["host"] = mounts.path_info(root, mnt)["host"]
+        try:
+            with os.scandir(root) as it:
+                out["items"] = sum(1 for _ in it)
+            out["exists"] = True
+        except OSError:
+            pass
+    return out
+
+
+@app.route("/api/recycle")
+def api_recycle():
+    path = os.path.normpath(request.args.get("path") or "/")
+    return jsonify(info=recycle_report(path, mounts.list_mounts(CONFIG_DIR)))
+
+
+@app.route("/api/destinations")
+def api_destinations():
+    """Where the original folders and the archives go with the saved settings (for the Status page)."""
+    cfg = settings.load()
+    mnt = mounts.list_mounts(CONFIG_DIR)
+    out = []
+    for p in cfg["sources"]:
+        item = {"source": p, "archives": engine.out_dir_for(p, cfg)}
+        item["archives_host"] = mounts.path_info(item["archives"], mnt)["host"]
+        if cfg["source_action"] == "recycle":
+            item["recycle"] = recycle_report(p, mnt)
+        elif cfg["source_action"] == "move" and cfg["move_dir"]:
+            dest = os.path.join(cfg["move_dir"], os.path.basename(p.rstrip("/")) or "root")
+            item["move"] = {"path": dest, "host": mounts.path_info(dest, mnt)["host"]}
+        out.append(item)
+    return jsonify(action=cfg["source_action"], items=out)
+
+
 @app.route("/api/pathinfo")
 def api_pathinfo():
     """Live check of a typed path, so the page can warn before saving."""

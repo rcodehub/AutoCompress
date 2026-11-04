@@ -4,7 +4,7 @@ import os
 import threading
 import time
 
-TOTAL_KEYS = ("archives", "files", "bytes_in", "bytes_out", "freed", "moved", "kept", "failed", "runs",
+TOTAL_KEYS = ("archives", "files", "bytes_in", "bytes_out", "freed", "moved", "recycled", "kept", "failed", "runs",
               "seconds", "crc_names", "sfv", "volumes")
 DAY_KEYS = ("archives", "files", "bytes_in", "bytes_out", "failed")
 MAX_DAYS = 400
@@ -70,7 +70,7 @@ class Stats:
                 d["bytes_in"] += bytes_in
                 d["bytes_out"] += bytes_out
             tot["seconds"] += seconds
-            tot[{"delete": "freed", "move": "moved", "recycle": "moved"}.get(action, "kept")] += bytes_in
+            tot[{"delete": "freed", "move": "moved", "recycle": "recycled"}.get(action, "kept")] += bytes_in
             tot["volumes"] += volumes if volumes > 1 else 0
             if checksum == "filename":
                 tot["crc_names"] += 1

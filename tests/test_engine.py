@@ -388,6 +388,8 @@ def test_recycle():
     m_share = [fake_mount("/source", "/Media")]
     check("recycle path: mapped share root", mounts.recycle_target("/source/Show", m_share) == ("/source/.Recycle.Bin", None))
     check("recycle path: sub-folders keep their tree", mounts.recycle_target("/source/A/B/Show", m_share) == ("/source/.Recycle.Bin/A/B", None))
+    check("recycle root: share root bin", mounts.recycle_root("/source/Show", m_share) == ("/source/.Recycle.Bin", None))
+    check("recycle root: via all-shares mapping", mounts.recycle_root("/mnt/user/Media/A/Show", [fake_mount("/mnt/user", "/")]) == ("/mnt/user/Media/.Recycle.Bin", None))
     m_all = [fake_mount("/mnt/user", "/")]
     check("recycle path: all shares mapped", mounts.recycle_target("/mnt/user/Media/A/Show", m_all) == ("/mnt/user/Media/.Recycle.Bin/A", None))
     check("recycle path: top of all shares refused", mounts.recycle_target("/mnt/user", m_all)[1] is not None)
@@ -412,7 +414,8 @@ def test_recycle():
         os.remove(f"{share}/" + [x for x in rars(share) if x.startswith("Plain")][0])
         run(eng, base_cfg(sources=[share], source_action="recycle"))
         check("recycle: a clash in the bin gets a .1 suffix", os.path.isdir(f"{share}/.Recycle.Bin/Plain.1"), os.listdir(f"{share}/.Recycle.Bin"))
-        s = eng.snapshot()
+        log = " ".join(x["msg"] for x in eng.log_since(0)[0]) if isinstance(eng.log_since(0), tuple) else str(eng.log_since(0))
+        check("recycle: log says where the folder went", "moved to the Recycle Bin: " + share in log and "go to the Recycle Bin" in log, log[-400:])
         check("recycle: .Recycle.Bin itself is never compressed", not any(x.startswith(".Recycle") for x in rars(share)))
     finally:
         mounts.list_mounts = real

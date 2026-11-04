@@ -353,6 +353,8 @@ class Engine:
                 if why:
                     raise RuntimeError(f"Cannot use the Recycle Bin for {s}: {why}. "
                                        "Choose another action for the original folder in Settings.")
+                self.log("info", f"Compressed folders from {s} go to the Recycle Bin: "
+                                 f"{mounts.recycle_root(os.path.join(s, 'x'), self._mounts)[0]}")
         mv = cfg["move_dir"]
         if cfg["source_action"] == "move":
             if not mv:
@@ -762,14 +764,14 @@ class Engine:
         bytes_out = sum(os.path.getsize(os.path.join(out_dir, final)) for f, final in placed.items() if final.endswith(".rar"))
         final_names = [v for k, v in placed.items() if v.endswith(".rar")]
         # ---- 6. the folder itself
-        action, problem = cfg["source_action"], None
+        action, problem, where = cfg["source_action"], None, None
         try:
             if action == "delete":
                 shutil.rmtree(path)
             elif action == "move":
                 self._move_dir(path, job["root"], cfg)
             elif action == "recycle":
-                self._recycle_dir(path, cfg)
+                where = self._recycle_dir(path, cfg)
         except (OSError, RuntimeError) as e:
             problem, action = f"the archive was created and tested, but the folder could not be {'removed' if action == 'delete' else 'moved'}: {e}", "keep"
         with self.lock:
@@ -781,7 +783,7 @@ class Engine:
         ratio = f", {100 * (1 - bytes_out / job['bytes']):.0f}% smaller" if job["bytes"] and bytes_out < job["bytes"] else ""
         self.log("info", f"Done: {name} -> {final_names[0]}{' (+' + str(len(vols) - 1) + ' volumes)' if len(vols) > 1 else ''}"
                          f" - {human(job['bytes'])} -> {human(bytes_out)}{ratio} in {secs:.0f}s"
-                         f"{', folder ' + {'delete': 'deleted', 'move': 'moved', 'recycle': 'moved to the Recycle Bin'}.get(action, 'kept')}")
+                         f"{', folder ' + {'delete': 'deleted', 'move': 'moved', 'recycle': 'moved to the Recycle Bin: ' + str(where)}.get(action, 'kept')}")
         if problem:
             self._fail(path, problem, warn=True)
 
@@ -806,6 +808,7 @@ class Engine:
                     n += 1
                 dest = f"{dest}.{n}"
             shutil.move(src, dest)
+        return dest
 
     def _move_dir(self, src, root, cfg):
         """Move into move_dir/<source folder name>/<folder name>."""

@@ -114,38 +114,47 @@ def _parts(p):
     return [x for x in p.split("/") if x]
 
 
-def recycle_target(path, mounts):
-    """Where the Unraid Recycle Bin plugin keeps deleted files for `path`: <share>/.Recycle.Bin/<path inside the share>.
-    Returns (destination folder, None) or (None, reason). The share is the first folder of the mapped host path
-    (from mountinfo), and the share's root has to be reachable inside the container: either the share itself is
-    mapped, or all shares (e.g. /mnt/user) are."""
+def _recycle_parts(path, mounts):
+    """(share root inside the container, folders below the share root leading to `path`, None) or (None, None, reason)."""
     m = containing_mount(path, mounts)
     if not m:
-        return None, f"{path} is not inside a mapped folder"
+        return None, None, f"{path} is not inside a mapped folder"
     rel_in_mount = _parts(os.path.relpath(os.path.normpath(path), os.path.normpath(m["path"])))
     rel_in_mount = [] if rel_in_mount == ["."] else rel_in_mount
     root = _parts(m.get("root") or "")
     if len(root) == 0:
         # a whole file system is mapped (e.g. /mnt/user): the first folder below it is the share
         if not rel_in_mount:
-            return None, f"{path} is the top of all shares - choose a folder inside a share"
-        share_root = os.path.join(m["path"], rel_in_mount[0])
-        inside = rel_in_mount[1:]
-    elif len(root) == 1:
-        share_root, inside = m["path"], rel_in_mount             # the share itself is mapped
-    else:
-        # a folder inside a share is mapped: look for another mapping of the same file system that shows the share root
-        share = root[0]
-        alt = next((o for o in mounts if o is not m and o.get("device") == m.get("device") and o.get("fstype") == m.get("fstype")
-                    and not _parts(o.get("root") or "")), None)
-        if not alt:
-            return None, (f"the share '{share}' is not reachable from {m['path']}: map the share itself "
-                          f"(host path /mnt/user/{share}) or all shares (/mnt/user) into the container")
-        share_root = os.path.join(alt["path"], share)
-        inside = root[1:] + rel_in_mount
+            return None, None, f"{path} is the top of all shares - choose a folder inside a share"
+        return os.path.join(m["path"], rel_in_mount[0]), rel_in_mount[1:], None
+    if len(root) == 1:
+        return m["path"], rel_in_mount, None                      # the share itself is mapped
+    # a folder inside a share is mapped: look for another mapping of the same file system that shows the share root
+    share = root[0]
+    alt = next((o for o in mounts if o is not m and o.get("device") == m.get("device") and o.get("fstype") == m.get("fstype")
+                and not _parts(o.get("root") or "")), None)
+    if not alt:
+        return None, None, (f"the share '{share}' is not reachable from {m['path']}: map the share itself "
+                            f"(host path /mnt/user/{share}) or all shares (/mnt/user) into the container")
+    return os.path.join(alt["path"], share), root[1:] + rel_in_mount, None
+
+
+def recycle_target(path, mounts):
+    """Where the Unraid Recycle Bin plugin keeps deleted files for `path`: <share>/.Recycle.Bin/<path inside the share>.
+    Returns (folder the item goes into, None) or (None, reason). The share is the first folder of the mapped host path
+    (from mountinfo); its root has to be reachable inside the container: the share itself is mapped, or all shares are."""
+    share_root, inside, why = _recycle_parts(path, mounts)
+    if why:
+        return None, why
     if not inside:
         return None, f"{path} is the share root itself"
     return os.path.join(share_root, RECYCLE_NAME, *inside[:-1]), None
+
+
+def recycle_root(path, mounts):
+    """The share's .Recycle.Bin folder for `path`: (folder, None) or (None, reason)."""
+    share_root, _, why = _recycle_parts(path, mounts)
+    return (os.path.join(share_root, RECYCLE_NAME), None) if not why else (None, why)
 
 
 def suggested_sources(config_dir="/data"):

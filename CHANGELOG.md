@@ -3,6 +3,8 @@
 Newest first. The latest entries are copied into the Unraid template (shown in Community Applications) each time an image is published.
 
 ### 2026-11-04
+- The Status page now shows what happens to the original folders (Recycle Bin, delete, move or keep) and where: the Recycle Bin folder on your server and how many items it holds. The log names the Recycle Bin folder at the start of a run and for every folder moved there, and Stats has a Recycle Bin tile.
+- The folder locations box in Settings is now live: it follows the folders you type or pick (sources, output, move folder, Recycle Bin) and shows where each one is on your server, instead of only checking the four template paths.
 - The original folder now goes to the share's **`.Recycle.Bin`** by default (the place the Unraid Recycle Bin plugin uses for files deleted over SMB). Delete, move and keep are still available; existing settings are unchanged. If the share's root is not mapped into the container, Settings says so and a fresh install keeps the folders instead.
 - New optional path **All shares** (`/mnt/user`, under advanced settings in the template): with it mapped, the folder pickers and **Compress folder…** can reach any share, not only the mapped folders.
 - New **Compress folder…** button: pick any folder and compress it now as a one-off job, either as a single archive or as one archive per sub-folder. It ignores the scanned folders and the schedule, uses your compression settings, and lets you choose for that run only what happens to the folder afterwards and where the archive goes.

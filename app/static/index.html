@@ -234,6 +234,11 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
       <div class="card"><h3>Working on</h3><div id="curdir" class="big">-</div><div id="curpass" class="muted small"></div></div>
     </div>
 
+    <section class="card" id="destCard" hidden>
+      <h2>Original folders after compressing</h2>
+      <div id="destBody"></div>
+    </section>
+
     <section class="card">
       <h2>Progress</h2>
       <div class="bar"><i id="barfill"></i></div>
@@ -544,6 +549,35 @@ function banner(kind, text, sticky) {
 // ---- status
 let lastLog = 0, running = false;
 
+const DEST_HEAD = {
+  recycle: "Compressed folders are moved to the Recycle Bin of their share",
+  delete: "Compressed folders are deleted permanently",
+  move: "Compressed folders are moved to the move folder",
+  keep: "Compressed folders are kept where they are",
+};
+async function loadDest() {
+  let d;
+  try { d = await api("/api/destinations"); } catch (e) { return; }
+  const body = $("destBody"); body.replaceChildren();
+  $("destCard").hidden = !d.items.length;
+  if (!d.items.length) return;
+  body.append(h("div", {}, h("b", {}, DEST_HEAD[d.action] || d.action)));
+  if (d.action === "recycle")
+    body.append(h("div", { class: "hint" }, "This is .Recycle.Bin at the root of the share - the same place the Unraid Recycle Bin plugin uses for files deleted over SMB, so the plugin lists it and empties it on its schedule. Without the plugin nothing empties it. Change this under Settings > After compressing."));
+  for (const it of d.items) {
+    body.append(h("div", { class: "infoline", style: "margin:10px 0 4px" }, h("span", { class: "path" }, it.source), " archives go to ",
+      h("span", { class: "path" }, it.archives_host || it.archives)));
+    if (it.recycle) {
+      const r = it.recycle;
+      body.append(r.ok
+        ? h("div", { class: "okline" }, "Recycle Bin: " + (r.host || r.bin) + (r.exists ? " - " + r.items + " item" + (r.items === 1 ? "" : "s") + " inside" : " - created on first use"))
+        : h("div", { class: "missing" }, "The Recycle Bin cannot be reached: " + r.why + ". Scans stop with an error until this is fixed or another action is chosen in Settings."));
+    }
+    if (it.move) body.append(h("div", { class: "okline" }, "Moved to: " + (it.move.host || it.move.path)));
+  }
+}
+let lastState = null;
+
 async function pollStatus() {
   try {
     const d = await api("/api/status");
@@ -576,6 +610,8 @@ function renderStatus(d) {
   showBuild(d.build);
   const e = d.engine, s = d.schedule;
   running = e.state !== "idle";
+  if (lastState !== null && lastState !== "idle" && e.state === "idle") loadDest();   // a run just ended: the bin changed
+  lastState = e.state;
   const pill = $("pill");
   const verb = e.mode === "verify" ? "Checking CRCs" : e.dry_run ? "Dry run" : "Compressing";
   pill.textContent = e.state === "idle" ? "Idle" : e.state === "stopping" ? "Stopping..." : verb;
@@ -744,22 +780,60 @@ function addSource(path) {
 let mountList = [], choicesInfo = { levels: {}, dictionaries: [] };
 const fmtBytes = (n) => n == null ? "" : n >= 1e12 ? (n / 1e12).toFixed(1) + " TB" : n >= 1e9 ? (n / 1e9).toFixed(0) + " GB" : (n / 1e6).toFixed(0) + " MB";
 
+let configDir = "/data", locSeq = 0;
+
+// Live view of the folders in use: built from what is typed in the form right now, not from the template.
+async function renderLocations() {
+  const box = $("locBox"); if (!box) return;
+  const mine = ++locSeq;
+  const act = $("source_action").value;
+  const srcs = [...$("sources").querySelectorAll("input")].map((i) => i.value.trim()).filter(Boolean);
+  const rows = [["App data", configDir, null]];
+  for (const p of srcs) rows.push(["Compress", p, null]);
+  const out = $("output_dir").value.trim();
+  rows.push(["Archive output", out, out ? null : "same folder as each source"]);
+  if (act === "move") rows.push(["Move folder", $("move_dir").value.trim(), null]);
+  const infos = await Promise.all(rows.map(([, p, note]) => (p && !note)
+    ? api("/api/pathinfo?path=" + encodeURIComponent(p)).then((r) => r.info).catch(() => null) : null));
+  const bins = act === "recycle" ? await Promise.all(srcs.map((p) =>
+    api("/api/recycle?path=" + encodeURIComponent(p)).then((r) => r.info).catch(() => null))) : [];
+  if (mine !== locSeq) return;                     // a newer update is already on its way
+  const cells = [];
+  rows.forEach(([label, p, note], i) => {
+    const info = infos[i];
+    let val;
+    if (note) val = h("span", { class: "muted" }, note);
+    else if (!p) val = h("span", { class: "na" }, "not set");
+    else if (!info) val = h("span", { class: "na" }, "checking...");
+    else if (!info.exists) val = h("span", { class: "na" }, "not mapped - this folder does not exist in the container");
+    else if (info.host) val = h("span", { class: "path" }, info.host);
+    else val = h("span", { class: "muted" }, "inside " + (info.mount || "the container") + " (server path not detectable)");
+    cells.push(h("span", {}, h("span", { class: "path" }, p || "-"), " ", h("span", { class: "muted small" }, label)), val);
+  });
+  bins.forEach((b) => {
+    if (!b) return;
+    const val = !b.ok ? h("span", { class: "na" }, "not reachable: " + b.why)
+      : h("span", {}, h("span", { class: "path" }, b.host || b.bin),
+          h("span", { class: "muted small" }, b.exists ? " - " + b.items + " item" + (b.items === 1 ? "" : "s") + " inside" : " - created on first use"));
+    cells.push(h("span", {}, h("span", { class: "path" }, b.bin || "-"), " ", h("span", { class: "muted small" }, "Recycle Bin")), val);
+  });
+  box.replaceChildren(...cells);
+}
+const refreshLoc = (() => { let t; return () => { clearTimeout(t); t = setTimeout(() => renderLocations().catch(() => {}), 350); }; })();
+for (const id of ["output_dir", "move_dir", "source_action"]) { $(id).addEventListener("input", refreshLoc); $(id).addEventListener("change", refreshLoc); }
+new MutationObserver(refreshLoc).observe($("sources"), { childList: true });
+$("sources").addEventListener("input", refreshLoc);
+$("sources").addEventListener("change", refreshLoc);
+
 async function loadMounts() {
   const d = await api("/api/mounts");
   mountList = d.mounts;
   const box = $("mountsBox"); box.replaceChildren();
   const data = d.mounts.filter((m) => !m.config);
-  box.append(h("h3", {}, "Template paths on your server"));
-  const hp = h("div", { class: "hostpaths" });
-  const byPath = Object.fromEntries(d.mounts.map((m) => [m.path, m]));
-  for (const [cp, label] of [["/source", "Folders to compress"], ["/output", "Archive output"], ["/trash", "Trash folder"], [d.config_dir, "App data"]]) {
-    const m = byPath[cp];
-    const val = !m ? h("span", { class: "na" }, "not mapped")
-      : m.host ? h("span", { class: "path" }, m.host)
-      : h("span", { class: "muted" }, "device " + m.device + (m.root && m.root !== "/" ? ", folder " + m.root : "") + " (pool path not detectable)");
-    hp.append(h("span", {}, h("span", { class: "path" }, cp), " ", h("span", { class: "muted small" }, label)), val);
-  }
-  box.append(hp);
+  box.append(h("h3", {}, "Where your folders are on the server"));
+  box.append(h("div", { class: "hostpaths", id: "locBox" }));
+  configDir = d.config_dir;
+  renderLocations();
   box.append(h("h3", {}, "Folders mapped into this container"));
   if (!data.length) {
     box.append(h("div", { class: "banner warn" }, "No data folders are mapped into this container yet. In Unraid: Docker tab -> AutoCompress -> Edit, set the Host Path of \"Folders to compress\" to the share that holds the folders you want compressed (the Container Path should be /source), press Apply, then reload this page. More folders can be added with \"Add another Path\"."));
@@ -872,6 +946,7 @@ $("btnSave").addEventListener("click", async () => {
   try {
     await post("/api/settings", collect());
     await loadSettings();
+    loadDest();
     $("saveMsg").textContent = running ? "Saved - applies from the next scan." : "Saved.";
   } catch (e) {
     $("saveMsg").textContent = "Not saved - see the problems listed at the top of this page.";
@@ -973,6 +1048,7 @@ function renderStats() {
     tile("Archive size", fmtSize(t.bytes_out), t.bytes_in ? (100 * t.bytes_out / t.bytes_in).toFixed(1) + "% of the original" : ""),
     tile("Space saved", saved > 0 ? fmtSize(saved) : "0 B", saved > 0 ? pct.toFixed(1) + "% smaller" : "already compressed data"),
     tile("Folders deleted", fmtSize(t.freed), "original data removed"),
+    tile("Recycle Bin", fmtSize(t.recycled), "moved to .Recycle.Bin"),
     tile("Folders moved", fmtSize(t.moved), "to the move folder"),
     tile("Folders kept", fmtSize(t.kept), "originals left in place"),
     tile("Checksums", fmtNum(t.crc_names + t.sfv), fmtNum(t.crc_names) + " in file names, " + fmtNum(t.sfv) + " SFV files"),
@@ -1153,6 +1229,8 @@ syncModeBtn();
 
 // ---- go
 loadSettings().catch((e) => banner("bad", "Could not load settings: " + e.message));
+loadDest();
+setInterval(loadDest, 30000);
 pollStatus();
 setInterval(pollStatus, 1000);
 </script>
