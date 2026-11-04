@@ -2,6 +2,9 @@
 
 Newest first. The latest entries are copied into the Unraid template (shown in Community Applications) each time an image is published.
 
+### 2026-11-04
+- New **Compress folder…** button: pick any folder and compress it now as a one-off job, either as a single archive or as one archive per sub-folder. It ignores the scanned folders and the schedule, uses your compression settings, and lets you choose for that run only what happens to the folder afterwards and where the archive goes.
+
 ### 2026-11-03
 - First release: every sub-folder of the folders you choose is compressed into its own RAR archive on a schedule or on demand.
 - Settings for the compression level, solid archives, dictionary size, recovery record, RAR threads, split volumes, password (with optional file name encryption) and files to leave out.

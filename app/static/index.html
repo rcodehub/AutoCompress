@@ -206,6 +206,7 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
       <span class="spacer"></span>
       <button id="btnRun" class="primary">Run now</button>
       <button id="btnDry">Dry run</button>
+      <button id="btnOne" title="Compress one folder you pick, right now, independent of the scanned folders and the schedule">Compress folder…</button>
       <button id="btnStop" class="danger" disabled>Stop</button>
       <button id="btnVerify" title="Recalculate the checksums of archives that have a CRC in their name or an SFV file, and compare">Check CRCs</button>
       <button id="btnMode" class="iconbtn" title="Switch light / dark" aria-label="Switch light / dark">☾</button>
@@ -458,6 +459,23 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
   <div class="hint" style="margin-top:12px">The look is saved on the server (in /data/ui.json) and used in every browser. Light/dark mode is chosen per browser.</div>
 </aside>
 
+<dialog id="dlgOne">
+  <div class="dlg-h">Compress a folder now</div>
+  <div class="dlg-b" style="max-height:none">
+    <p class="muted small" style="margin:0 0 10px">A one-off job. It ignores the scanned folders and the schedule and uses your compression settings (level, recovery record, checksum, password...).</p>
+    <div class="field"><label for="onePath">Folder</label>
+      <div class="row"><input type="text" id="onePath" spellcheck="false" placeholder="/source/Some Folder"><button class="small" id="oneBrowse" type="button">Browse...</button></div></div>
+    <div class="field"><label for="oneMode">What to compress</label>
+      <select id="oneMode"><option value="folder">This folder, as one archive</option><option value="children">Each sub-folder of this folder, as its own archive</option></select></div>
+    <div class="field"><label for="oneAction">After compressing</label>
+      <select id="oneAction"><option value="">Use the setting</option><option value="delete">Delete the folder</option><option value="move">Move the folder to the move folder</option><option value="keep">Keep the folder</option></select></div>
+    <div class="field"><label for="oneOut">Put the archive in <span class="muted">(optional, otherwise the setting)</span></label>
+      <div class="row"><input type="text" id="oneOut" spellcheck="false" placeholder="same as the Settings page"><button class="small" id="oneOutBrowse" type="button">Browse...</button></div></div>
+    <div id="oneErr" class="missing" hidden></div>
+  </div>
+  <div class="dlg-f"><button id="oneCancel">Cancel</button><button id="oneDry">Dry run</button><button class="primary" id="oneStart">Compress</button></div>
+</dialog>
+
 <dialog id="dlg">
   <div class="dlg-h">Choose a folder</div>
   <div class="dlg-m" id="dlgMounts"></div>
@@ -561,7 +579,7 @@ function renderStatus(d) {
   const verb = e.mode === "verify" ? "Checking CRCs" : e.dry_run ? "Dry run" : "Compressing";
   pill.textContent = e.state === "idle" ? "Idle" : e.state === "stopping" ? "Stopping..." : verb;
   pill.className = "pill" + (e.state === "running" ? " run" : e.state === "stopping" ? " stop" : "");
-  $("btnRun").disabled = $("btnDry").disabled = $("btnVerify").disabled = running;
+  $("btnRun").disabled = $("btnDry").disabled = $("btnVerify").disabled = $("btnOne").disabled = running;
   $("btnStop").disabled = e.state !== "running";
 
   const now = Date.now() / 1000 + serverSkew;
@@ -645,6 +663,21 @@ async function startRun(dry, verify) {
 $("btnRun").addEventListener("click", () => startRun(false));
 $("btnDry").addEventListener("click", () => startRun(true));
 $("btnVerify").addEventListener("click", () => startRun(false, true));
+// ---- one-off folder
+$("btnOne").addEventListener("click", () => { $("oneErr").hidden = true; $("dlgOne").showModal(); });
+$("oneCancel").addEventListener("click", () => $("dlgOne").close());
+$("oneBrowse").addEventListener("click", () => pickFolder($("onePath").value || "/", (p) => { $("onePath").value = p; }));
+$("oneOutBrowse").addEventListener("click", () => pickFolder($("oneOut").value || "/", (p) => { $("oneOut").value = p; }));
+async function startOne(dry) {
+  $("oneErr").hidden = true;
+  try {
+    await post("/api/run-folder", { path: $("onePath").value.trim(), mode: $("oneMode").value, source_action: $("oneAction").value,
+      output_dir: $("oneOut").value.trim(), dry_run: dry });
+    $("dlgOne").close(); pollStatus();
+  } catch (e) { $("oneErr").textContent = e.message; $("oneErr").hidden = false; }
+}
+$("oneStart").addEventListener("click", () => startOne(false));
+$("oneDry").addEventListener("click", () => startOne(true));
 $("btnStop").addEventListener("click", async () => { await post("/api/stop"); pollStatus(); });
 $("btnLogout").addEventListener("click", () => { location.href = "/logout"; });
 

@@ -345,6 +345,39 @@ def test_parallel():
     shutil.rmtree(work)
 
 
+def run_oneoff(eng, cfg, path, mode, dry=False):
+    assert eng.start(cfg, "one-off", dry, False, oneoff={"path": path, "mode": mode})
+    eng.thread.join(120)
+    assert not eng.running
+    return eng.snapshot()
+
+
+def test_oneoff():
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    make_folders(src)
+    os.makedirs(f"{src}/Skipme/x", exist_ok=True)           # excluded by name in scheduled scans
+    with open(f"{src}/Skipme/x/f.txt", "w") as f:
+        f.write("data")
+    # no configured sources at all: a one-off does not need them
+    cfg = base_cfg(sources=[], exclude_dirs=["Skipme"])
+    run_oneoff(eng, cfg, f"{src}/Plain", "folder", dry=True)
+    check("one-off: dry run changes nothing", os.path.isdir(f"{src}/Plain") and not rars(src))
+    run_oneoff(eng, cfg, f"{src}/Plain", "folder")
+    check("one-off folder: only that folder is compressed and removed",
+          len(rars(src)) == 1 and rars(src)[0].startswith("Plain [") and not os.path.exists(f"{src}/Plain")
+          and os.path.isdir(f"{src}/My Show"), (rars(src), os.listdir(src)))
+    run_oneoff(eng, cfg, f"{src}/Skipme", "folder")
+    check("one-off folder: ignores the exclude list when picked on purpose",
+          any(x.startswith("Skipme") for x in rars(src)), rars(src))
+    check("one-off: recorded in history as one-off", eng.history[-1]["trigger"] == "one-off", eng.history[-1]["trigger"])
+    mv = os.path.join(work, "trash")
+    run_oneoff(eng, base_cfg(sources=[], source_action="move", move_dir=mv), src, "children")
+    check("one-off children: every sub-folder gets its own archive",
+          any(x.startswith("My Show") for x in rars(src)) and os.path.isfile(f"{mv}/src/My Show/sub/a.txt"), (rars(src), os.listdir(src)))
+    shutil.rmtree(work)
+
+
 def test_settings():
     cfg = settings.DEFAULTS
     c, e = settings.validate({**cfg, "sources": ["/a"], "output_dir": "/a/out"})
@@ -370,7 +403,7 @@ def test_settings():
 
 for t in (test_basic_filename_crc, test_sfv_and_none, test_move_output_mirror, test_dry_run_age_and_skips,
           test_volumes_password_excludes, test_safety_nets, test_existing_archives_and_verify, test_parallel,
-          test_settings):
+          test_oneoff, test_settings):
     print(f"--- {t.__name__}")
     try:
         t()

@@ -235,12 +235,15 @@ class Engine:
             return s
 
     # ------------------------------------------------------------ control
-    def start(self, cfg, trigger="manual", dry_run=False, verify_only=False):
+    def start(self, cfg, trigger="manual", dry_run=False, verify_only=False, oneoff=None):
+        """oneoff = {"path": folder, "mode": "folder" | "children"}: compress just that folder (or each of its
+        sub-folders), independent of the configured source folders and the schedule."""
         with self.lock:
             if self.running:
                 return False
             self.stop_event.clear()
-            self.thread = threading.Thread(target=self._run, args=(dict(cfg), trigger, dry_run, verify_only), daemon=True)
+            self.thread = threading.Thread(target=self._run, args=(dict(cfg), trigger, dry_run, verify_only, oneoff),
+                                           daemon=True)
             self.status = self._blank_status()
             self.status.update(state="running", trigger=trigger, dry_run=dry_run, started_at=time.time(),
                                mode="verify" if verify_only else "dry" if dry_run else "run")
@@ -279,20 +282,34 @@ class Engine:
         return any(fnmatch.fnmatch(low, p.lower()) for p in cfg["exclude_dirs"])
 
     # ------------------------------------------------------------ the run
-    def _run(self, cfg, trigger, dry_run, verify_only):
+    def _run(self, cfg, trigger, dry_run, verify_only, oneoff=None):
         result, message = "completed", ""
+        only = None
         label = ", verify" if verify_only else ", dry run" if dry_run else ""
         self.log("info", f"=== Run started ({trigger}{label}) ===")
         try:
             if not verify_only and not self.tools["rar"]:
                 raise RuntimeError("The rar program is not installed in this container")
             sources = []
-            for s in cfg["sources"]:
-                s = os.path.realpath(s)
-                if os.path.isdir(s):
-                    sources.append(s)
+            if oneoff:
+                target = os.path.realpath(oneoff["path"])
+                if not os.path.isdir(target):
+                    raise RuntimeError(f"Folder not found: {target}")
+                if oneoff["mode"] == "folder":
+                    if target == os.sep:
+                        raise RuntimeError("The root folder cannot be compressed as one archive")
+                    sources, only = [os.path.dirname(target)], os.path.basename(target)
+                    self.log("info", f"One-off: compressing the folder {target}")
                 else:
-                    self.log("warn", f"Source folder not found, skipping: {s}")
+                    sources = [target]
+                    self.log("info", f"One-off: compressing every sub-folder of {target}")
+            else:
+                for s in cfg["sources"]:
+                    s = os.path.realpath(s)
+                    if os.path.isdir(s):
+                        sources.append(s)
+                    else:
+                        self.log("warn", f"Source folder not found, skipping: {s}")
             if not sources:
                 raise RuntimeError("No valid source folders configured")
             self._check_folders(cfg, sources)
@@ -304,7 +321,7 @@ class Engine:
             if verify_only:
                 self._verify_checksums(sources, cfg)
             else:
-                jobs = self._collect(sources, cfg, trigger)
+                jobs = self._collect(sources, cfg, trigger, only)
                 with self.lock:
                     self.found = len(jobs)
                 self.log("info", f"Found {len(jobs)} folder(s) to compress"
@@ -316,7 +333,8 @@ class Engine:
                     with ThreadPoolExecutor(max_workers=cfg["parallel_jobs"]) as pool:
                         for f in [pool.submit(self._work, j, cfg) for j in jobs]:
                             f.result()
-                if cfg["checksum_existing"] and cfg["checksum_mode"] != "none" and not self.stop_event.is_set():
+                if (not oneoff and cfg["checksum_existing"] and cfg["checksum_mode"] != "none"
+                        and not self.stop_event.is_set()):
                     self._existing_pass(sources, cfg, dry_run)
             if self.stop_event.is_set():
                 result = "stopped"
@@ -450,7 +468,7 @@ class Engine:
     def _signature(job_or_info):
         return f"{job_or_info['files']}:{job_or_info['bytes']}:{int(job_or_info['newest'])}"
 
-    def _collect(self, sources, cfg, trigger):
+    def _collect(self, sources, cfg, trigger, only=None):
         jobs = []
         failed_before = self._load_failed() if trigger == "schedule" else {}
         age = cfg["min_age_minutes"]
@@ -465,7 +483,10 @@ class Engine:
             for e in entries:
                 if self.stop_event.is_set():
                     return jobs
-                if not e.is_dir(follow_symlinks=False) or self._excluded(e.name, cfg):
+                if only is not None:          # one-off on a single folder: the user picked it, so no exclusions
+                    if e.name != only or not e.is_dir(follow_symlinks=False):
+                        continue
+                elif not e.is_dir(follow_symlinks=False) or self._excluded(e.name, cfg):
                     continue
                 name = e.name
                 if name.lower() in existing:

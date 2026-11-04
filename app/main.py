@@ -326,6 +326,39 @@ def api_run():
     return jsonify(ok=True)
 
 
+@app.route("/api/run-folder", methods=["POST"])
+def api_run_folder():
+    """One-off job: compress a single folder (or each sub-folder of it) now, whatever the configured source
+    folders and schedule say. Uses the saved compression settings; the folder action and the output folder
+    can be overridden for this run only."""
+    body = request.get_json(silent=True) or {}
+    path = os.path.normpath(str(body.get("path") or ""))
+    mode = body.get("mode") if body.get("mode") in ("folder", "children") else "folder"
+    if not os.path.isabs(path) or not os.path.isdir(path):
+        return jsonify(ok=False, error="Choose an existing folder (a path inside the container)."), 400
+    if settings._within(path, settings.CONFIG_DIR):
+        return jsonify(ok=False, error="That is the app data folder - choose a folder such as /source."), 400
+    if engine.running:
+        return jsonify(ok=False, error="A scan is already running. Wait for it to finish or stop it first."), 409
+    cfg = settings.load()
+    action = str(body.get("source_action") or "")
+    if action:
+        cfg["source_action"] = action
+    if "output_dir" in body and str(body.get("output_dir") or "").strip():
+        cfg["output_dir"] = str(body["output_dir"]).strip()
+    if action == "move" and str(body.get("move_dir") or "").strip():
+        cfg["move_dir"] = str(body["move_dir"]).strip()
+    cfg["sources"] = [path] if mode == "children" else [os.path.dirname(path) or "/"]
+    cfg["min_age_minutes"] = 0          # the user chose this folder on purpose
+    cfg["checksum_existing"] = False
+    cfg, errors = settings.validate(cfg)
+    if errors:
+        return jsonify(ok=False, error="; ".join(errors)), 400
+    engine.start(cfg, trigger="one-off", dry_run=bool(body.get("dry_run")),
+                 oneoff={"path": path, "mode": mode})
+    return jsonify(ok=True)
+
+
 @app.route("/api/stop", methods=["POST"])
 def api_stop():
     return jsonify(ok=engine.stop())
