@@ -1,0 +1,16 @@
+services:
+  autocompress:
+    image: ghcr.io/rcodehub/autocompress:latest
+    container_name: autocompress
+    restart: unless-stopped
+    ports:
+      - "8845:8080"                                # web UI
+    environment:
+      - TZ=America/New_York
+      - UI_USERNAME=admin
+      - UI_PASSWORD=change-me                      # blank = no login
+    volumes:
+      - /mnt/user/appdata/autocompress:/data       # settings, history, stats, logs
+      - /mnt/user/to-compress:/source              # every sub-folder of this folder becomes a .rar
+      # - /mnt/user/archives:/output               # optional: archives go here instead of next to the folders
+      # - /mnt/user/trash:/trash                   # optional: compressed folders are moved here instead of deleted
