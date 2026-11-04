@@ -112,7 +112,7 @@ def suggested_sources(config_dir="/data"):
     (never the app data, output or trash folder). Checked on the real file system."""
     if os.path.isdir(SOURCE_DIR):
         return [SOURCE_DIR]
-    skip = {os.path.normpath(p) for p in (TRASH_DIR, OUTPUT_DIR, config_dir)}
+    skip = {os.path.normpath(p) for p in (TRASH_DIR, OUTPUT_DIR, config_dir, "/mnt/user")}
     return [m["path"] for m in list_mounts(config_dir) if os.path.normpath(m["path"]) not in skip]
 
 

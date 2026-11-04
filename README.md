@@ -33,6 +33,7 @@ then **Docker → Add Container → Template: my-AutoCompress**.
 | Folders to compress | `/source` | Every sub-folder of this folder becomes a `.rar`. Read/write. Add more folders with *Add another Path* and add them as sources in the web UI |
 | Archive output (optional) | `/output` | If set, archives are written here instead of next to the folders. Must not be inside a source folder |
 | Trash folder (optional) | `/trash` | If set, compressed folders are **moved** here instead of deleted. Must not be inside a source folder or a parent of one. Use the same kind of path as the sources (both `/mnt/user/…` or both `/mnt/diskN/…`) so the move is instant |
+| All shares (optional, advanced) | `/mnt/user` | Lets **Compress folder…** and the folder pickers browse any share instead of only the mapped folders above. Gives the container read/write access to all your shares, so leave it empty unless you need it |
 | Timezone | `TZ` | For times in the logs |
 | UI username | `UI_USERNAME` | Login name, default `admin` |
 | UI password | `UI_PASSWORD` | Turns on the login page. Leave blank for no login (then anyone who can reach the port can use the UI) |

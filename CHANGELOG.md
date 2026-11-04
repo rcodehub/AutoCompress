@@ -3,6 +3,7 @@
 Newest first. The latest entries are copied into the Unraid template (shown in Community Applications) each time an image is published.
 
 ### 2026-11-04
+- New optional path **All shares** (`/mnt/user`, under advanced settings in the template): with it mapped, the folder pickers and **Compress folder…** can reach any share, not only the mapped folders.
 - New **Compress folder…** button: pick any folder and compress it now as a one-off job, either as a single archive or as one archive per sub-folder. It ignores the scanned folders and the schedule, uses your compression settings, and lets you choose for that run only what happens to the folder afterwards and where the archive goes.
 
 ### 2026-11-03
