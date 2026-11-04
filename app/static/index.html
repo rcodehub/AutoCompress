@@ -597,7 +597,9 @@ function renderWaiting(e, s, now) {
   $("waitSub").textContent = "(" + total + " folder" + (total === 1 ? "" : "s") + " changed too recently - skipped for now)";
   const rows = list.map((w) => {
     const left = w.ready_at - now;
-    return h("tr", {}, h("td", { class: "path" }, w.path),
+    return h("tr", {}, h("td", {}, h("div", { class: "path" }, w.path),
+        h("div", { class: "muted small" }, "last change " + new Date((w.newest + 0) * 1000).toLocaleString() + " in " + w.newest_path
+          + (w.future ? " - " + w.future + " item" + (w.future === 1 ? " is" : "s are") + " dated in the future, so the time it arrived on the server is used" : ""))),
       h("td", {}, w.files + " file" + (w.files === 1 ? "" : "s") + ", " + fmtSize(w.bytes)),
       h("td", { style: "text-align:right;white-space:nowrap" }, untilText(left)));
   });

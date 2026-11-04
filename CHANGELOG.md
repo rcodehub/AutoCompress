@@ -3,6 +3,7 @@
 Newest first. The latest entries are copied into the Unraid template (shown in Community Applications) each time an image is published.
 
 ### 2026-11-04
+- Fix: files dated in the future (for example from a timezone mix-up on the computer that wrote them) no longer keep a folder waiting for hours. Their date is ignored and the time they arrived on the server is used. The Waiting card and the log now name the newest changed file, and warn about future-dated items.
 - New **Waiting** card on the Status page: folders skipped because they changed too recently are listed with their size and a countdown to when they are old enough, soonest first. It stays until the next scan starts.
 - The Status page now shows what happens to the original folders (Recycle Bin, delete, move or keep) and where: the Recycle Bin folder on your server and how many items it holds. The log names the Recycle Bin folder at the start of a run and for every folder moved there, and Stats has a Recycle Bin tile.
 - The folder locations box in Settings is now live: it follows the folders you type or pick (sources, output, move folder, Recycle Bin) and shows where each one is on your server, instead of only checking the four template paths.

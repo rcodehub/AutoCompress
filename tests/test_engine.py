@@ -356,6 +356,24 @@ def run_oneoff(eng, cfg, path, mode, dry=False):
     return eng.snapshot()
 
 
+def test_future_dates():
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    make_folders(src)
+    t = time.time() + 3 * 3600                                   # a file stamped 3 hours ahead (timezone mix-up)
+    os.utime(f"{src}/Plain/p.txt", (t, t))
+    s = run(eng, base_cfg(sources=[src], min_age_minutes=5))
+    w = {os.path.basename(x["path"]): x for x in s["waiting"]}
+    check("future date: countdown is not pushed out by the bad date",
+          "Plain" in w and w["Plain"]["ready_at"] < time.time() + 400 and w["Plain"]["future"] == 1, w)
+    check("future date: the culprit is named", w["Plain"]["newest_path"] == "p.txt", w)
+    msgs = " ".join(e["msg"] for e in eng.log_since(0, 1000))
+    check("future date: logged as a warning", "dated in the future" in msgs, msgs[-300:])
+    s = run(eng, base_cfg(sources=[src], min_age_minutes=0))
+    check("future date: compressed normally when the age limit is off", any(x.startswith("Plain") for x in rars(src)), rars(src))
+    shutil.rmtree(work)
+
+
 def test_oneoff():
     work, eng = fresh()
     src = os.path.join(work, "src")
@@ -465,7 +483,7 @@ def test_settings():
 
 for t in (test_basic_filename_crc, test_sfv_and_none, test_move_output_mirror, test_dry_run_age_and_skips,
           test_volumes_password_excludes, test_safety_nets, test_existing_archives_and_verify, test_parallel,
-          test_oneoff, test_recycle, test_settings):
+          test_future_dates, test_oneoff, test_recycle, test_settings):
     print(f"--- {t.__name__}")
     try:
         t()

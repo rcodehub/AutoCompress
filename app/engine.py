@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 import mounts
 from stats import Stats
 
+FUTURE_SLACK = 120                      # seconds a file date may be ahead of the clock before it is not trusted
 WORK_PREFIX = ".autocompress-"          # private per-archive work folders
 CRC_RE = re.compile(r" \[([0-9A-Fa-f]{8})\]$")
 PART_RE = re.compile(r"^(.*)\.part0*(\d+)\.rar$", re.I)
@@ -434,13 +435,31 @@ class Engine:
 
     # ------------------------------------------------------------ scanning
     def _inspect(self, path):
-        """File count, size and newest modification time of everything inside a folder."""
-        files = size = 0
+        """File count, size and the time of the newest change inside a folder.
+
+        The change time of an item is its modification time - unless that lies in the future (a clock or timezone
+        mismatch on the machine that wrote it, or a tool that stamps files with a later date). A date like that says
+        nothing about when the item arrived, so the inode change time (when it was really written on this server,
+        which cannot be set to a date in the future) is used instead."""
+        files = size = future = 0
         err = None
+        now = time.time()
+        example = []                                    # first item with a future date
+
+        def changed(st, p):
+            nonlocal future
+            if st.st_mtime > now + FUTURE_SLACK:
+                future += 1
+                if not example:
+                    example.append((p, st.st_mtime))
+                return st.st_ctime
+            return st.st_mtime
+
         try:
-            newest = os.lstat(path).st_mtime
+            st0 = os.lstat(path)
+            newest, newest_path = changed(st0, path), path
         except OSError:
-            newest = 0.0
+            newest, newest_path = 0.0, path
         stack = [path]
         while stack:
             d = stack.pop()
@@ -452,7 +471,9 @@ class Engine:
                         except OSError as ex:
                             err = err or str(ex)
                             continue
-                        newest = max(newest, st.st_mtime)
+                        t = changed(st, e.path)
+                        if t > newest:
+                            newest, newest_path = t, e.path
                         if stat.S_ISDIR(st.st_mode):
                             stack.append(e.path)
                         elif stat.S_ISREG(st.st_mode):
@@ -460,7 +481,8 @@ class Engine:
                             size += st.st_size
             except OSError as ex:
                 err = err or f"{d}: {ex}"
-        return {"files": files, "bytes": size, "newest": newest, "error": err}
+        return {"files": files, "bytes": size, "newest": newest, "error": err, "newest_path": newest_path,
+                "future": future, "future_example": example[0] if example else None}
 
     def _existing_bases(self, out_dir):
         """Names (lower case) that already have an archive in out_dir: name.rar, name [CRC].rar, name.part1.rar."""
@@ -513,14 +535,23 @@ class Engine:
                     self.log("warn", f"Skipped {e.path}: another folder named '{name}' is already queued for {out_dir}")
                     continue
                 info = self._inspect(e.path)
+                if info["future"]:
+                    p, t = info["future_example"]
+                    self._warn_once(("future", e.path),
+                                    f"{e.path}: {info['future']} item(s) are dated in the future (for example {os.path.relpath(p, e.path)}, "
+                                    f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(t))}) - wrong clock or timezone on the machine that "
+                                    "wrote them. Their date is ignored; the time they arrived on this server is used instead.")
                 if info["files"] == 0:
                     self._warn_once(("empty", e.path), f"Skipped {e.path}: no files inside")
                     continue
                 if age > 0 and time.time() - info["newest"] < age * 60:
                     self.deferred.add(e.path)
-                    self.waiting[e.path] = {"ready_at": info["newest"] + age * 60, "files": info["files"], "bytes": info["bytes"]}
-                    self.log("info", f"Skipped for now (changed {max(0, (time.time() - info['newest']) / 60):.0f} min ago, "
-                                     f"could still be copied; setting: skip folders newer than {age} min): {e.path}")
+                    self.waiting[e.path] = {"ready_at": info["newest"] + age * 60, "files": info["files"], "bytes": info["bytes"],
+                                            "newest": info["newest"], "newest_path": os.path.relpath(info["newest_path"], e.path),
+                                            "future": info["future"]}
+                    self.log("info", f"Skipped for now (changed {max(0, (time.time() - info['newest']) / 60):.0f} min ago "
+                                     f"in {os.path.relpath(info['newest_path'], e.path)}, could still be copied; "
+                                     f"setting: skip folders newer than {age} min): {e.path}")
                     continue
                 if failed_before.get(e.path) == self._signature(info):
                     self.skipped += 1

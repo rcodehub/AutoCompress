@@ -78,7 +78,7 @@ The share's root must be reachable inside the container: map the **share itself*
 | Scan automatically / interval | off / 60 min | Interval counts from the end of the previous scan |
 | Also scan at container start | off | |
 | Folders at the same time | 1 | Each runs its own RAR, so memory multiplies |
-| Skip folders newer than | 10 min | Leaves a folder alone if anything in it changed recently (copy in progress). 0 = off |
+| Skip folders newer than | 10 min | Leaves a folder alone if anything in it changed recently (copy in progress). The change time is the newest modification time of any file or sub-folder inside; a date in the future (wrong clock or timezone on the machine that wrote it) is ignored and the time the item arrived on the server is used instead. 0 = off |
 | Set permissions | on, 666 / 777 | For archives and SFV files created, and folders the app creates |
 | Also set the owner | off, 99:100 | `nobody:users` on Unraid |
 
