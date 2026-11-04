@@ -234,6 +234,11 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
       <div class="card"><h3>Working on</h3><div id="curdir" class="big">-</div><div id="curpass" class="muted small"></div></div>
     </div>
 
+    <section class="card" id="waitCard" hidden>
+      <h2>Waiting <span class="muted small" id="waitSub">(changed too recently - skipped for now)</span></h2>
+      <div id="waitBody"></div>
+    </section>
+
     <section class="card" id="destCard" hidden>
       <h2>Original folders after compressing</h2>
       <div id="destBody"></div>
@@ -578,6 +583,30 @@ async function loadDest() {
 }
 let lastState = null;
 
+function untilText(sec) {
+  if (sec <= 0) return "old enough now";
+  return "old enough in " + (sec < 90 ? Math.ceil(sec) + " s" : sec < 5400 ? Math.ceil(sec / 60) + " min" : (sec / 3600).toFixed(1) + " h");
+}
+// Folders skipped because they changed within the "skip folders newer than" time; refreshed with every status update.
+function renderWaiting(e, s, now) {
+  const list = e.waiting || [], total = e.waiting_total || 0;
+  $("waitCard").hidden = !total;
+  if (!total) return;
+  const next = s && s.enabled && s.next_run ? "picked up by the scan at " + new Date(s.next_run * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : "picked up the next time a scan runs (press Run now)";
+  $("waitSub").textContent = "(" + total + " folder" + (total === 1 ? "" : "s") + " changed too recently - skipped for now)";
+  const rows = list.map((w) => {
+    const left = w.ready_at - now;
+    return h("tr", {}, h("td", { class: "path" }, w.path),
+      h("td", {}, w.files + " file" + (w.files === 1 ? "" : "s") + ", " + fmtSize(w.bytes)),
+      h("td", { style: "text-align:right;white-space:nowrap" }, untilText(left)));
+  });
+  $("waitBody").replaceChildren(
+    h("div", { class: "hint" }, "A folder still being copied or changed is left alone until nothing inside it has changed for the minimum age (Settings > Schedule & performance > Skip folders newer than). Once old enough it is " + next + "."),
+    h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Folder"), h("th", {}, "Contents"), h("th", { style: "text-align:right" }, "When"))), h("tbody", {}, rows)),
+    total > list.length ? h("div", { class: "muted small" }, "... and " + (total - list.length) + " more") : "");
+}
+
 async function pollStatus() {
   try {
     const d = await api("/api/status");
@@ -647,6 +676,7 @@ function renderStatus(d) {
     $("cComp").textContent = e.compressed; $("cFail").textContent = e.failed;
     $("barfill").style.width = (e.found ? Math.min(100, e.done / e.found * 100) : 0) + "%";
   }
+  renderWaiting(e, s, now);
   $("cSkip").textContent = e.skipped; $("cDef").textContent = e.deferred; $("cCrc").textContent = e.crc_added;
   $("cData").textContent = fmtSize(e.bytes_in || 0); $("cOut").textContent = fmtSize(e.bytes_out || 0);
 

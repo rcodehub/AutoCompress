@@ -3,6 +3,7 @@
 Newest first. The latest entries are copied into the Unraid template (shown in Community Applications) each time an image is published.
 
 ### 2026-11-04
+- New **Waiting** card on the Status page: folders skipped because they changed too recently are listed with their size and a countdown to when they are old enough, soonest first. It stays until the next scan starts.
 - The Status page now shows what happens to the original folders (Recycle Bin, delete, move or keep) and where: the Recycle Bin folder on your server and how many items it holds. The log names the Recycle Bin folder at the start of a run and for every folder moved there, and Stats has a Recycle Bin tile.
 - The folder locations box in Settings is now live: it follows the folders you type or pick (sources, output, move folder, Recycle Bin) and shows where each one is on your server, instead of only checking the four template paths.
 - The original folder now goes to the share's **`.Recycle.Bin`** by default (the place the Unraid Recycle Bin plugin uses for files deleted over SMB). Delete, move and keep are still available; existing settings are unchanged. If the share's root is not mapped into the container, Settings says so and a fresh install keeps the folders instead.

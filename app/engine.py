@@ -136,6 +136,7 @@ class Engine:
         self.found = 0
         self.failures = []
         self.deferred = set()        # folders skipped because they changed recently
+        self.waiting = {}            # path -> {"ready_at", "files", "bytes"}: when each of those becomes old enough
         self.skipped = 0             # folders skipped because an archive of that name already exists / failed before
         self.crc_added = 0
         self.verified = {"checked": 0, "ok": 0, "bad": 0, "missing": 0}
@@ -228,6 +229,8 @@ class Engine:
             s["done"] = s["compressed"] + s["failed"]
             s["remaining"] = max(0, s["found"] - s["done"])
             s["deferred"] = len(self.deferred)
+            s["waiting"] = sorted(({"path": k, **v} for k, v in self.waiting.items()), key=lambda w: w["ready_at"])[:30]
+            s["waiting_total"] = len(self.waiting)
             s["skipped"] = self.skipped
             s["crc_added"] = self.crc_added
             s["verified"] = dict(self.verified)
@@ -515,6 +518,7 @@ class Engine:
                     continue
                 if age > 0 and time.time() - info["newest"] < age * 60:
                     self.deferred.add(e.path)
+                    self.waiting[e.path] = {"ready_at": info["newest"] + age * 60, "files": info["files"], "bytes": info["bytes"]}
                     self.log("info", f"Skipped for now (changed {max(0, (time.time() - info['newest']) / 60):.0f} min ago, "
                                      f"could still be copied; setting: skip folders newer than {age} min): {e.path}")
                     continue

@@ -48,7 +48,7 @@ The share's root must be reachable inside the container: map the **share itself*
 
 ## Web UI
 
-- **Status** – next/last scan, **where compressed folders and archives go** (including the Recycle Bin location on your server and how many items are in it), progress, what each job is doing (with percent), problems and a live log. Buttons: **Run now**, **Dry run** (shows what would happen without changing anything), **Compress folder…**, **Stop**, **Check CRCs**.
+- **Status** – next/last scan, **where compressed folders and archives go** (including the Recycle Bin location on your server and how many items are in it), progress, **folders waiting because they changed too recently** (with when each will be old enough), what each job is doing (with percent), problems and a live log. Buttons: **Run now**, **Dry run** (shows what would happen without changing anything), **Compress folder…**, **Stop**, **Check CRCs**.
 - **Settings** – all options below, with a folder picker and live checks that show each folder's real location on the server.
 - **History** – every scan with counts, sizes and problems.
 - **Stats** – lifetime totals (data compressed, space saved, success rate, speed), a 30-day chart, results per compression level and records.

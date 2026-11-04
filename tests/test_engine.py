@@ -180,6 +180,10 @@ def test_dry_run_age_and_skips():
     check("dry run: reported", any("[dry run] would compress" in e["msg"] for e in eng.log_since(0, 1000)))
     s = run(eng, base_cfg(sources=[src], min_age_minutes=30))
     check("min age: fresh folders are skipped, not compressed", s["compressed"] == 0 and s["deferred"] == 2 and not rars(src), s)
+    w = s["waiting"]
+    check("min age: waiting list has both folders, soonest first, with ready times",
+          s["waiting_total"] == 2 and len(w) == 2 and w[0]["ready_at"] <= w[1]["ready_at"]
+          and all(x["ready_at"] > time.time() + 1500 and x["files"] > 0 for x in w), w)
     old = time.time() - 3 * 3600
     for d, ds, fs in os.walk(src):
         for x in ds + fs:
