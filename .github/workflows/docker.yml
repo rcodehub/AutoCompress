@@ -23,6 +23,7 @@ jobs:
       - run: python3 -I tests/test_engine.py
       - run: python3 -I tests/test_auth.py
       - run: python3 -I tests/test_paths.py
+      - run: python3 -I tests/test_stats.py
 
   publish:
     needs: test

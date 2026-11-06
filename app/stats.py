@@ -1,6 +1,7 @@
 """Lifetime statistics, kept in /data/stats.json (survive restarts and updates)."""
 import json
 import os
+import tempfile
 import threading
 import time
 
@@ -18,33 +19,61 @@ class Stats:
     def __init__(self, path):
         self.path = path
         self.lock = threading.Lock()
+        self.save_lock = threading.Lock()      # one writer at a time; never held together with self.lock
         self.data = self._load()
         self._dirty = 0
 
     def _load(self):
+        b = blank()
         try:
             with open(self.path) as f:
                 d = json.load(f)
-            b = blank()
-            for k in b:
-                d.setdefault(k, b[k])
-            for k in TOTAL_KEYS:
-                d["totals"].setdefault(k, 0)
-            return d
-        except (OSError, ValueError, AttributeError):
-            return blank()
+        except (OSError, ValueError):
+            return b
+        if not isinstance(d, dict):
+            return b
+        for k, default in b.items():                 # a key of the wrong type is replaced, the rest is kept
+            want = (int, float) if k == "since" else type(default)
+            if not isinstance(d.get(k), want) or isinstance(d.get(k), bool):
+                d[k] = default
+        for k in TOTAL_KEYS:
+            if not isinstance(d["totals"].get(k), (int, float)) or isinstance(d["totals"].get(k), bool):
+                d["totals"][k] = 0
+        for key in ("levels", "days", "records"):    # entries that are not objects would break the counters later
+            d[key] = {k: v for k, v in d[key].items() if isinstance(v, dict)}
+        for k, day in d["days"].items():
+            for dk in DAY_KEYS:
+                if not isinstance(day.get(dk), (int, float)) or isinstance(day.get(dk), bool):
+                    day[dk] = 0
+        for k, lv in d["levels"].items():
+            for lk in ("n", "in", "out"):
+                if not isinstance(lv.get(lk), (int, float)) or isinstance(lv.get(lk), bool):
+                    lv[lk] = 0
+        d["records"] = {k: v for k, v in d["records"].items()
+                        if isinstance(v.get("value"), (int, float)) and not isinstance(v.get("value"), bool)}
+        return d
 
     def save(self):
         with self.lock:
             snap = json.dumps(self.data)
             self._dirty = 0
-        try:
-            tmp = self.path + ".tmp"
-            with open(tmp, "w") as f:
-                f.write(snap)
-            os.replace(tmp, self.path)
-        except OSError:
-            pass
+        with self.save_lock:                         # a unique temp file, and only one writer at a time
+            tmp = None
+            try:
+                fd, tmp = tempfile.mkstemp(dir=os.path.dirname(self.path) or ".", prefix=".stats-", suffix=".tmp")
+                with os.fdopen(fd, "w") as f:
+                    f.write(snap)
+                os.chmod(tmp, 0o644)
+                os.replace(tmp, self.path)
+                tmp = None
+            except OSError:
+                pass
+            finally:
+                if tmp:
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
 
     def _day(self):
         days = self.data["days"]

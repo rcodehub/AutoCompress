@@ -93,9 +93,23 @@ def _within(path, parent):
     return path == parent or path.startswith(parent.rstrip(os.sep) + os.sep)
 
 
-def validate(data):
-    """Return (clean_settings, errors). Unknown keys are dropped, missing ones get defaults."""
+def mapped_roots():
+    """Folders mapped into the container (the app data folder is not one of them)."""
+    return mounts.browse_roots(CONFIG_DIR)
+
+
+def validate(data, roots=None):
+    """Return (clean_settings, errors). Unknown keys are dropped, missing ones get defaults.
+    roots: when given, source/move/output folders have to be inside one of these (the mapped folders)."""
+    s, errors, _ = check(data, roots)
+    return s, errors
+
+
+def check(data, roots=None):
+    """validate() plus the names of the path settings that failed; those are put back to their default
+    in the returned settings (a save is refused anyway, a lenient load keeps everything else)."""
     errors = []
+    bad = set()
     s = dict(DEFAULTS)
 
     def num(key, lo, hi, label):
@@ -124,8 +138,13 @@ def validate(data):
     for p in s["sources"]:
         if not p.startswith("/"):
             errors.append(f"Source folder must be an absolute path: {p}")
+            bad.add("sources")
         elif _within(p, CONFIG_DIR):
             errors.append(f"Source folder {p} is the app data folder - choose a folder such as /source")
+            bad.add("sources")
+        elif roots is not None and not mounts.inside_roots(p, roots):
+            errors.append(f"Source folder {p} is not inside a folder mapped into the container")
+            bad.add("sources")
 
     for k in ("schedule_enabled", "run_on_start", "solid", "include_root", "encrypt_names", "verify",
               "checksum_existing", "set_perms", "chown_enabled"):
@@ -164,31 +183,52 @@ def validate(data):
         else:
             s[k] = v
 
-    s["output_dir"] = str(data.get("output_dir", "") or "").strip()
-    if s["output_dir"]:
-        s["output_dir"] = os.path.normpath(s["output_dir"])
-        if not s["output_dir"].startswith("/"):
-            errors.append("Output folder must be an absolute path")
+    def folder(key, label):
+        """Checks every destination folder has to pass: absolute, away from the app data folder, mapped."""
+        s[key] = str(data.get(key, "") or "").strip()
+        if not s[key]:
+            return False
+        s[key] = os.path.normpath(s[key])
+        if not s[key].startswith("/"):
+            errors.append(f"{label} must be an absolute path")
+        elif _within(s[key], CONFIG_DIR) or _within(CONFIG_DIR, s[key]):
+            errors.append(f"{label} {s[key]} must not be, contain or be inside the app data folder {CONFIG_DIR}")
+        elif roots is not None and not mounts.inside_roots(s[key], roots):
+            errors.append(f"{label} {s[key]} is not inside a folder mapped into the container")
+        else:
+            return True
+        bad.add(key)
+        return False
+
+    if folder("output_dir", "Output folder"):
         for src in s["sources"]:
-            if _within(s["output_dir"], src) and os.path.normpath(s["output_dir"]) != src:
+            if _within(s["output_dir"], src) and s["output_dir"] != src:
                 errors.append(f"Output folder {s['output_dir']} must not be inside the source folder {src} - "
                               "it would be compressed itself. Use a separate mapping.")
+                bad.add("output_dir")
+            elif _within(src, s["output_dir"]) and s["output_dir"] != src:
+                errors.append(f"Source folder {src} must not be inside the output folder {s['output_dir']} - "
+                              "give the source folder and the output folder separate mappings")
+                bad.add("output_dir")
 
-    s["move_dir"] = str(data.get("move_dir", "") or "").strip()
-    if s["move_dir"]:
-        s["move_dir"] = os.path.normpath(s["move_dir"])
-        if not s["move_dir"].startswith("/"):
-            errors.append("Move folder must be an absolute path")
+    if folder("move_dir", "Move folder"):
         for src in s["sources"]:
             if _within(s["move_dir"], src):
                 errors.append(f"Move folder {s['move_dir']} must not be inside the source folder {src}")
+                bad.add("move_dir")
             elif _within(src, s["move_dir"]):
                 errors.append(f"Source folder {src} must not be inside the move folder {s['move_dir']} - "
                               "give the source folder and the move folder separate mappings")
+                bad.add("move_dir")
     if s["source_action"] == "move" and not s["move_dir"]:
         errors.append("A move folder is required when the folder action is set to move")
+        bad.add("source_action")
+    elif s["source_action"] == "move" and "move_dir" in bad:
+        bad.add("source_action")             # the move folder was refused: do not keep "move" without a folder
 
-    return s, errors
+    for k in bad:
+        s[k] = list(DEFAULTS[k]) if isinstance(DEFAULTS[k], list) else DEFAULTS[k]
+    return s, errors, bad
 
 
 def load_with_report():
@@ -209,7 +249,7 @@ def load_with_report():
             source = "unreadable"
         if data is None:                      # nothing usable saved: first-run defaults
             data = env_defaults()
-        clean, problems = validate(data)
+        clean, problems, _ = check(data, mapped_roots())
         return clean, problems, source
 
 
@@ -233,14 +273,15 @@ def storage_info():
     return {"path": SETTINGS_PATH, "saved_at": saved_at}
 
 
-def save(data):
+def save(data, roots=None):
+    """roots: the mapped folders to hold the source/move/output folders to (None = not checked)."""
     data = dict(data)
     # The browser never receives the password: a blank field keeps the saved one, clear_password removes it.
     if data.pop("clear_password", False):
         data["password"] = ""
     elif not data.get("password"):
         data["password"] = load()["password"]
-    clean, errors = validate(data)
+    clean, errors = validate(data, roots)
     if errors:
         return None, errors
     with _lock:

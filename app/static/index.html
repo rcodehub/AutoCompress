@@ -264,8 +264,8 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
 
     <section class="card">
       <h2>Folders being compressed</h2>
-      <table><thead><tr><th>Job</th><th>Folder</th><th>Step</th><th style="text-align:right">Time</th><th></th></tr></thead>
-        <tbody id="threads"><tr><td colspan="5" class="idle">Not running</td></tr></tbody></table>
+      <div style="overflow-x:auto"><table><thead><tr><th>Job</th><th>Folder</th><th>Step</th><th style="text-align:right">Time</th><th></th></tr></thead>
+        <tbody id="threads"><tr><td colspan="5" class="idle">Not running</td></tr></tbody></table></div>
     </section>
 
     <section class="card" id="failCard" hidden>
@@ -473,15 +473,17 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
 
 <dialog id="dlgOne">
   <div class="dlg-h">Compress a folder now</div>
-  <div class="dlg-b" style="max-height:none">
+  <div class="dlg-b" style="max-height:none;padding:12px 16px">
     <p class="muted small" style="margin:0 0 10px">A one-off job. It ignores the scanned folders and the schedule and uses your compression settings (level, recovery record, checksum, password...).</p>
     <div class="field"><label for="onePath">Folder</label>
-      <div class="row"><input type="text" id="onePath" spellcheck="false" placeholder="/source/Some Folder"><button class="small" id="oneBrowse" type="button">Browse...</button></div></div>
+      <div class="row"><input type="text" id="onePath" spellcheck="false" placeholder="/source/Some Folder"><button class="small" id="oneBrowse" type="button">Browse...</button></div>
+      <div id="oneStatus"></div></div>
     <div class="hint" style="margin:0 0 10px">The folder is scanned like a source folder: if it contains sub-folders, <b>each sub-folder becomes its own archive</b> and files directly inside it are left alone. Only a folder without sub-folders is compressed as a whole.</div>
     <div class="field"><label for="oneAction">After compressing</label>
       <select id="oneAction"><option value="">Use the setting</option><option value="recycle">Move the folder to the share's Recycle Bin</option><option value="delete">Delete the folder</option><option value="move">Move the folder to the move folder</option><option value="keep">Keep the folder</option></select></div>
     <div class="field"><label for="oneOut">Put the archive in <span class="muted">(optional, otherwise the setting)</span></label>
-      <div class="row"><input type="text" id="oneOut" spellcheck="false" placeholder="same as the Settings page"><button class="small" id="oneOutBrowse" type="button">Browse...</button></div></div>
+      <div class="row"><input type="text" id="oneOut" spellcheck="false" placeholder="same as the Settings page"><button class="small" id="oneOutBrowse" type="button">Browse...</button></div>
+      <div id="oneOutStatus"></div></div>
     <div id="oneErr" class="missing" hidden></div>
   </div>
   <div class="dlg-f"><button id="oneCancel">Cancel</button><button id="oneDry">Dry run</button><button class="primary" id="oneStart">Compress</button></div>
@@ -532,6 +534,15 @@ function dur(s) {
 }
 const fmtTime = (t) => t ? new Date(t * 1000).toLocaleString() : "-";
 let logCleared = 0;
+// per-browser toggles: "ac." keys; a value saved under the old "ae." name is picked up once and moved
+function lsGet(k) {
+  try {
+    let v = localStorage.getItem("ac." + k);
+    if (v === null && (v = localStorage.getItem("ae." + k)) !== null) { localStorage.setItem("ac." + k, v); localStorage.removeItem("ae." + k); }
+    return v;
+  } catch (e) { return null; }
+}
+function lsSet(k, v) { try { localStorage.setItem("ac." + k, v); } catch (e) { /* ignore */ } }
 let serverSkew = 0;   // server clock - browser clock
 
 // ---- tabs
@@ -591,21 +602,25 @@ function untilText(sec) {
 function renderWaiting(e, s, now) {
   const list = e.waiting || [], total = e.waiting_total || 0;
   $("waitCard").hidden = !total;
-  if (!total) return;
+  if (!total) { delete $("waitBody").dataset.key; return; }
   const next = s && s.enabled && s.next_run ? "picked up by the scan at " + new Date(s.next_run * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : "picked up the next time a scan runs (press Run now)";
+  const lefts = list.map((w) => untilText(w.ready_at - now));
+  // rebuild only when something shown has changed, not on every poll (keeps text selectable and avoids flicker)
+  const key = JSON.stringify([total, list, next, lefts]);
+  if ($("waitBody").dataset.key === key) return;
+  $("waitBody").dataset.key = key;
   $("waitSub").textContent = "(" + total + " folder" + (total === 1 ? "" : "s") + " changed too recently - skipped for now)";
-  const rows = list.map((w) => {
-    const left = w.ready_at - now;
+  const rows = list.map((w, i) => {
     return h("tr", {}, h("td", {}, h("div", { class: "path" }, w.path),
         h("div", { class: "muted small" }, "last change " + new Date((w.newest + 0) * 1000).toLocaleString() + " in " + w.newest_path
           + (w.future ? " - " + w.future + " item" + (w.future === 1 ? " is" : "s are") + " dated in the future, so the time it arrived on the server is used" : ""))),
       h("td", {}, w.files + " file" + (w.files === 1 ? "" : "s") + ", " + fmtSize(w.bytes)),
-      h("td", { style: "text-align:right;white-space:nowrap" }, untilText(left)));
+      h("td", { style: "text-align:right;white-space:nowrap" }, lefts[i]));
   });
   $("waitBody").replaceChildren(
     h("div", { class: "hint" }, "A folder still being copied or changed is left alone until nothing inside it has changed for the minimum age (Settings > Schedule & performance > Skip folders newer than). Once old enough it is " + next + "."),
-    h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Folder"), h("th", {}, "Contents"), h("th", { style: "text-align:right" }, "When"))), h("tbody", {}, rows)),
+    h("div", { style: "overflow-x:auto" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Folder"), h("th", {}, "Contents"), h("th", { style: "text-align:right" }, "When"))), h("tbody", {}, rows))),
     total > list.length ? h("div", { class: "muted small" }, "... and " + (total - list.length) + " more") : "");
 }
 
@@ -706,13 +721,17 @@ function renderStatus(d) {
       tr.querySelector(".step").replaceChildren(...step);
       tr.querySelector(".t").textContent = sl.path ? dur(sl.elapsed) : "";
       const act = tr.querySelector(".act");
-      const canCancel = !!sl.path && sl.phase !== "finishing" && e.state !== "stopping";
+      const canCancel = !!sl.path && sl.phase !== "finishing" && !sl.cancel && e.state !== "stopping";
       if (canCancel && !act.firstChild) act.append(h("button", {
         class: "small", title: "Cancel this folder only - nothing is changed and the other folders carry on",
         onclick: async (ev) => { ev.target.disabled = true; try { await post("/api/cancel", { path: sl.path }); } catch (err) { banner("bad", err.message); } pollStatus(); },
       }, "Cancel"));
-      if (!canCancel) act.replaceChildren();
+      if (!canCancel && (act.firstChild || sl.cancel)) {
+        if (sl.cancel) { if (!act.querySelector(".cancelling")) act.replaceChildren(h("span", { class: "muted small cancelling" }, "cancelling...")); }
+        else act.replaceChildren();
+      }
     }
+    tb.querySelectorAll("tr[data-slot]").forEach((r) => { if (Number(r.dataset.slot) > e.slots.length) r.remove(); });   // fewer slots than before
   }
 
   $("failCard").hidden = !e.failures.length;
@@ -733,10 +752,10 @@ function appendLog(entries) {
 }
 
 $("logFollow").addEventListener("change", () => {
-  try { localStorage.setItem("ae.logFollow", $("logFollow").checked ? "1" : "0"); } catch (e) { /* ignore */ }
+  lsSet("logFollow", $("logFollow").checked ? "1" : "0");
   if ($("logFollow").checked) $("log").scrollTop = $("log").scrollHeight;
 });
-try { if (localStorage.getItem("ae.logFollow") === "0") $("logFollow").checked = false; } catch (e) { /* ignore */ }
+if (lsGet("logFollow") === "0") $("logFollow").checked = false;
 $("btnClearLog").addEventListener("click", async () => {
   await post("/api/log/clear");
   $("log").replaceChildren();
@@ -753,8 +772,10 @@ $("btnVerify").addEventListener("click", () => startRun(false, true));
 // ---- one-off folder
 $("btnOne").addEventListener("click", () => { $("oneErr").hidden = true; $("dlgOne").showModal(); });
 $("oneCancel").addEventListener("click", () => $("dlgOne").close());
-$("oneBrowse").addEventListener("click", () => pickFolder($("onePath").value || "/", (p) => { $("onePath").value = p; }));
-$("oneOutBrowse").addEventListener("click", () => pickFolder($("oneOut").value || "/", (p) => { $("oneOut").value = p; }));
+bindCheck($("onePath"), $("oneStatus"));
+bindCheck($("oneOut"), $("oneOutStatus"));
+$("oneBrowse").addEventListener("click", () => pickFolder($("onePath").value || "/", (p) => { $("onePath").value = p; $("onePath").dispatchEvent(new Event("change")); }));
+$("oneOutBrowse").addEventListener("click", () => pickFolder($("oneOut").value || "/", (p) => { $("oneOut").value = p; $("oneOut").dispatchEvent(new Event("change")); }));
 async function startOne(dry) {
   $("oneErr").hidden = true;
   try {
@@ -1016,7 +1037,7 @@ async function browse(path) {
   $("dlgOk").disabled = top;                          // nothing to select until a mapped folder is opened
   const list = $("dlgList"); list.replaceChildren();
   if (top) {
-    if (!d.dirs.length) list.append(h("div", { class: "missing" }, "No folders are mapped into this container. Add a Path in the Unraid template (Edit the container) first."));
+    if (!d.dirs.length) list.append(h("div", { class: "missing" }, (d.error || "No folders are mapped into the container yet.") + " Add a Path in the Unraid template (Edit the container) first."));
     for (const r of d.dirs) list.append(h("div", { onclick: () => browse(r) }, r + "/"));
     return;
   }
@@ -1050,7 +1071,7 @@ async function loadHistory() {
       h("td", {}, fmtTime(r.started_at)), h("td", {}, kind),
       h("td", {}, res + (r.message ? " - " + r.message : "")),
       h("td", {}, vf ? r.verified.checked + " files" : r.found), h("td", {}, vf ? r.verified.ok + " OK" : r.compressed + (r.crc_added ? " (+" + r.crc_added + " CRC)" : "")),
-      h("td", {}, vf ? r.verified.bad + r.verified.missing : r.failed), h("td", {}, vf ? "-" : (r.skipped || 0) + (r.deferred ? " (+" + r.deferred + " recent)" : "")),
+      h("td", {}, vf ? r.verified.bad + r.verified.missing : r.failed + (r.cancelled ? " (+" + r.cancelled + " cancelled)" : "")), h("td", {}, vf ? "-" : (r.skipped || 0) + (r.deferred ? " (+" + r.deferred + " recent)" : "")),
       h("td", {}, vf ? "-" : fmtSize(r.bytes_in || 0)), h("td", {}, vf ? "-" : fmtSize(r.bytes_out || 0)),
       h("td", {}, dur(r.finished_at - r.started_at))));
     if (r.failures && r.failures.length) {
@@ -1079,7 +1100,7 @@ function fmtDuration(sec) {
 }
 const dayKey = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 let statsData = null, statsMetric = "archives";
-try { statsMetric = localStorage.getItem("ae.statsMetric") || "archives"; } catch (e) { /* ignore */ }
+statsMetric = lsGet("statsMetric") || "archives";
 
 async function loadStats() {
   const d = await api("/api/stats");
@@ -1105,7 +1126,7 @@ function renderStats() {
     tile("Original size", fmtSize(t.bytes_in), ""),
     tile("Archive size", fmtSize(t.bytes_out), t.bytes_in ? (100 * t.bytes_out / t.bytes_in).toFixed(1) + "% of the original" : ""),
     tile("Space saved", saved > 0 ? fmtSize(saved) : "0 B", saved > 0 ? pct.toFixed(1) + "% smaller" : "already compressed data"),
-    tile("Folders deleted", fmtSize(t.freed), "original data removed"),
+    tile("Originals deleted", fmtSize(t.freed), "original data removed"),
     tile("Recycle Bin", fmtSize(t.recycled), "moved to .Recycle.Bin"),
     tile("Folders moved", fmtSize(t.moved), "to the move folder"),
     tile("Folders kept", fmtSize(t.kept), "originals left in place"),
@@ -1219,7 +1240,7 @@ function renderRecords() {
 
 document.querySelectorAll("#sMetric button").forEach((b) => b.addEventListener("click", () => {
   statsMetric = b.dataset.m;
-  try { localStorage.setItem("ae.statsMetric", statsMetric); } catch (e) { /* ignore */ }
+  lsSet("statsMetric", statsMetric);
   if (statsData) renderStats();
 }));
 let resetArmed = null;

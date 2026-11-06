@@ -2,6 +2,7 @@
 import hmac
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -69,13 +70,35 @@ app.config.update(SESSION_COOKIE_NAME="autocompress_session", SESSION_COOKIE_HTT
 print(f"[auth] login required, user '{UI_USER}'" if AUTH_ON
       else "[auth] UI_PASSWORD not set - the web UI is open to anyone who can reach it", flush=True)
 
-_fails = {}   # ip -> timestamps of recent failed logins
+_fails = {}   # ip -> timestamps of recent failed logins (form and basic auth share this counter)
+_fails_lock = threading.Lock()
+LOCK_FAILS, LOCK_WINDOW = 8, 300
+
+
+def _recent(ip, now):
+    """Failures from this ip inside the window; forget every address that has none left."""
+    for k in [k for k, v in _fails.items() if not v or now - v[-1] >= LOCK_WINDOW]:
+        del _fails[k]
+    if ip in _fails:
+        _fails[ip] = [t for t in _fails[ip] if now - t < LOCK_WINDOW]
+    return len(_fails.get(ip, ()))
 
 
 def _locked(ip):
-    now = time.time()
-    _fails[ip] = [t for t in _fails.get(ip, []) if now - t < 300]
-    return len(_fails[ip]) >= 8
+    with _fails_lock:
+        return _recent(ip, time.time()) >= LOCK_FAILS
+
+
+def _note_fail(ip):
+    with _fails_lock:
+        now = time.time()
+        _recent(ip, now)
+        _fails.setdefault(ip, []).append(now)
+
+
+def _clean_user(name):
+    """A user name that is safe to put in one log line (no newlines or other control characters)."""
+    return re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", "?", name or "")[:40]
 
 
 def creds_ok(user, password):
@@ -90,8 +113,15 @@ def require_login():
     if session.get("ok"):
         return None
     a = request.authorization                     # scripts may still send HTTP basic auth
-    if a and creds_ok(a.username, a.password):
-        return None
+    if a:
+        ip = request.remote_addr or "?"
+        if _locked(ip):
+            print(f"[auth] basic auth blocked (too many failures) from {ip}", flush=True)
+            return jsonify(error="Too many failed logins - try again in a few minutes", login=True), 429
+        if creds_ok(a.username, a.password):
+            return None
+        _note_fail(ip)
+        print(f"[auth] failed basic auth for user '{_clean_user(a.username)}' from {ip}", flush=True)
     if request.path.startswith("/api/"):
         return jsonify(error="Login required", login=True), 401
     return redirect("/login")
@@ -111,8 +141,8 @@ def login():
             session.permanent = True
             session["ok"] = True
             return redirect("/")
-        _fails.setdefault(ip, []).append(time.time())
-        print(f"[auth] failed login for user '{(request.form.get('username') or '')[:40]}' from {ip}", flush=True)
+        _note_fail(ip)
+        print(f"[auth] failed login for user '{_clean_user(request.form.get('username'))}' from {ip}", flush=True)
         return redirect("/login?e=bad")
     if session.get("ok"):
         return redirect("/")
@@ -219,6 +249,16 @@ UI_THEMES = ("default", "unraid", "midnight", "nord", "dracula", "solarized", "f
              "contrast", "terminal")
 
 
+def json_body():
+    """The JSON object sent by the browser: (dict, None), or (None, 400 response) when it is anything else."""
+    body = request.get_json(silent=True)
+    if body is None and not request.get_data():
+        return {}, None
+    if not isinstance(body, dict):
+        return None, (jsonify(ok=False, error="The request body must be a JSON object"), 400)
+    return body, None
+
+
 def load_ui():
     try:
         with open(UI_PATH) as f:
@@ -246,7 +286,10 @@ def clean_ui(data):
 def api_ui():
     """Look and feel (theme, corners, density, font, shadows, page width, default light/dark mode)."""
     if request.method == "POST":
-        ui = clean_ui({**load_ui(), **(request.get_json(silent=True) or {})})
+        body, bad = json_body()
+        if bad:
+            return bad
+        ui = clean_ui({**load_ui(), **body})
         try:
             tmp = UI_PATH + ".tmp"
             with open(tmp, "w") as f:
@@ -279,8 +322,10 @@ def api_log_clear():
 @app.route("/api/settings", methods=["GET", "POST"])
 def api_settings():
     if request.method == "POST":
-        data = request.get_json(silent=True) or {}
-        clean, errors = settings.save(data)
+        data, bad = json_body()
+        if bad:
+            return bad
+        clean, errors = settings.save(data, settings.mapped_roots())
         if errors:
             return jsonify(ok=False, errors=errors), 400
         return jsonify(ok=True, settings=settings.public(clean))
@@ -357,7 +402,9 @@ def api_pathinfo():
 
 @app.route("/api/run", methods=["POST"])
 def api_run():
-    body = request.get_json(silent=True) or {}
+    body, bad = json_body()
+    if bad:
+        return bad
     cfg = settings.load()
     if not cfg["sources"]:
         return jsonify(ok=False, error="Add at least one source folder in Settings first."), 400
@@ -372,7 +419,9 @@ def api_run_folder():
     """One-off job: compress a single folder (or each sub-folder of it) now, whatever the configured source
     folders and schedule say. Uses the saved compression settings; the folder action and the output folder
     can be overridden for this run only."""
-    body = request.get_json(silent=True) or {}
+    body, bad = json_body()
+    if bad:
+        return bad
     path = os.path.normpath(str(body.get("path") or ""))
     mode = body.get("mode") if body.get("mode") in ("folder", "children") else "auto"
     if not os.path.isabs(path) or not os.path.isdir(path):
@@ -397,6 +446,10 @@ def api_run_folder():
     cfg["min_age_minutes"] = 0          # the user chose this folder on purpose
     cfg["checksum_existing"] = False
     cfg, errors = settings.validate(cfg)
+    roots = mounts.browse_roots(CONFIG_DIR)
+    for key, label in (("output_dir", "output"), ("move_dir", "move")):    # the source side was checked above
+        if cfg[key] and not mounts.inside_roots(cfg[key], roots):
+            errors.append(f"The {label} folder {cfg[key]} is not inside a folder mapped into the container")
     if errors:
         return jsonify(ok=False, error="; ".join(errors)), 400
     engine.start(cfg, trigger="one-off", dry_run=bool(body.get("dry_run")),
@@ -407,7 +460,10 @@ def api_run_folder():
 @app.route("/api/cancel", methods=["POST"])
 def api_cancel():
     """Cancel the compression of one folder; the rest of the run carries on."""
-    ok, why = engine.cancel_job(str((request.get_json(silent=True) or {}).get("path") or ""))
+    body, bad = json_body()
+    if bad:
+        return bad
+    ok, why = engine.cancel_job(str(body.get("path") or ""))
     return (jsonify(ok=True) if ok else (jsonify(ok=False, error=why), 409))
 
 
@@ -426,7 +482,8 @@ def api_browse():
     """List sub-folders for the folder picker. Only the folders mapped into the container can be browsed: anything
     else gives the virtual top level, which lists the mapped folders themselves (path "" and top: true)."""
     roots = mounts.browse_roots(CONFIG_DIR)
-    top = jsonify(path="", parent=None, top=True, dirs=roots)
+    top = jsonify(path="", parent=None, top=True, dirs=sorted(roots),
+                  error=None if roots else "No folders are mapped into the container yet.")
     raw = request.args.get("path") or ""
     if not raw or not roots:
         return top
