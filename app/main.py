@@ -374,7 +374,7 @@ def api_run_folder():
     can be overridden for this run only."""
     body = request.get_json(silent=True) or {}
     path = os.path.normpath(str(body.get("path") or ""))
-    mode = body.get("mode") if body.get("mode") in ("folder", "children") else "folder"
+    mode = body.get("mode") if body.get("mode") in ("folder", "children") else "auto"
     if not os.path.isabs(path) or not os.path.isdir(path):
         return jsonify(ok=False, error="Choose an existing folder (a path inside the container)."), 400
     if settings._within(path, settings.CONFIG_DIR):
@@ -382,6 +382,8 @@ def api_run_folder():
     if engine.running:
         return jsonify(ok=False, error="A scan is already running. Wait for it to finish or stop it first."), 409
     cfg = settings.load()
+    if mode == "auto":                    # look inside: sub-folders are compressed one by one, a folder without any as a whole
+        mode = engine.oneoff_mode(path, cfg)
     action = str(body.get("source_action") or "")
     if action:
         cfg["source_action"] = action
@@ -398,6 +400,13 @@ def api_run_folder():
     engine.start(cfg, trigger="one-off", dry_run=bool(body.get("dry_run")),
                  oneoff={"path": path, "mode": mode})
     return jsonify(ok=True)
+
+
+@app.route("/api/cancel", methods=["POST"])
+def api_cancel():
+    """Cancel the compression of one folder; the rest of the run carries on."""
+    ok, why = engine.cancel_job(str((request.get_json(silent=True) or {}).get("path") or ""))
+    return (jsonify(ok=True) if ok else (jsonify(ok=False, error=why), 409))
 
 
 @app.route("/api/stop", methods=["POST"])

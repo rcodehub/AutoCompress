@@ -374,6 +374,68 @@ def test_future_dates():
     shutil.rmtree(work)
 
 
+def test_cancel_one_job():
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(f"{src}/Big")
+    os.makedirs(f"{src}/Small")
+    with open(f"{src}/Big/big.bin", "wb") as f:                  # random data: slow to compress, so it can be cancelled
+        for _ in range(40):
+            f.write(os.urandom(8 << 20))
+    with open(f"{src}/Small/s.txt", "w") as f:
+        f.write("small")
+    cfg = base_cfg(sources=[src], parallel_jobs=2, rar_threads=1, level=5)
+    assert eng.start(cfg, "manual")
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        sl = [x for x in eng.snapshot()["slots"] if x["path"] == f"{src}/Big" and x["phase"] == "compressing"]
+        if sl:
+            break
+        time.sleep(0.1)
+    ok, why = eng.cancel_job(f"{src}/Big")
+    check("cancel: accepted while compressing", ok and not why, why)
+    ok2, why2 = eng.cancel_job(f"{src}/NotRunning")
+    check("cancel: unknown folder is refused", not ok2 and why2)
+    eng.thread.join(120)
+    s = eng.snapshot()
+    check("cancel: the other folder carried on and finished", any(x.startswith("Small") for x in rars(src)) and not os.path.exists(f"{src}/Small"), (rars(src), os.listdir(src)))
+    check("cancel: cancelled folder untouched, no archive, no work folder",
+          os.path.isfile(f"{src}/Big/big.bin") and not any(x.startswith("Big") for x in rars(src))
+          and not [x for x in os.listdir(src) if x.startswith(".autocompress")], os.listdir(src))
+    check("cancel: counted as cancelled, not failed, run still completes",
+          s["cancelled"] == 1 and s["failed"] == 0 and s["compressed"] == 1 and s["done"] == s["found"] == 2 and s["result"] == "completed", s)
+    s = run(eng, base_cfg(sources=[src]), trigger="schedule")
+    check("cancel: a scheduled scan skips it until it changes", s["skipped"] == 1 and s["compressed"] == 0
+          and os.path.isfile(f"{src}/Big/big.bin"), s)
+    s = run(eng, base_cfg(sources=[src]), trigger="manual", timeout=300)
+    check("cancel: Run now compresses it", s["compressed"] == 1 and any(x.startswith("Big") for x in rars(src))
+          and not os.path.exists(f"{src}/Big"), (s["compressed"], rars(src)))
+    shutil.rmtree(work)
+
+
+def test_oneoff_auto():
+    work, eng = fresh()
+    top = os.path.join(work, "Pick")
+    make_folders(top)                                              # Plain + My Show
+    with open(f"{top}/loose.txt", "w") as f:                       # a loose file in the picked folder
+        f.write("loose")
+    cfg = base_cfg(sources=[], exclude_dirs=["Skipme"])
+    check("auto: a folder with sub-folders is scanned", eng.oneoff_mode(top, cfg) == "children")
+    run_oneoff(eng, cfg, top, "auto")
+    check("auto: each sub-folder gets its own archive, the picked folder itself is not compressed",
+          sorted(x.split(" [")[0] for x in rars(top)) == ["My Show", "Plain"] and not rars(work)
+          and os.path.isfile(f"{top}/loose.txt"), (rars(top), rars(work), os.listdir(top)))
+    leaf = os.path.join(work, "Leaf")
+    os.makedirs(f"{leaf}/Skipme")
+    with open(f"{leaf}/a.txt", "w") as f:
+        f.write("a")
+    check("auto: only excluded sub-folders do not count", eng.oneoff_mode(leaf, cfg) == "folder")
+    run_oneoff(eng, cfg, leaf, "auto")
+    check("auto: a folder without sub-folders is compressed as a whole",
+          len(rars(work)) == 1 and rars(work)[0].startswith("Leaf [") and not os.path.exists(leaf), (rars(work), os.listdir(work)))
+    shutil.rmtree(work)
+
+
 def test_oneoff():
     work, eng = fresh()
     src = os.path.join(work, "src")
@@ -483,7 +545,7 @@ def test_settings():
 
 for t in (test_basic_filename_crc, test_sfv_and_none, test_move_output_mirror, test_dry_run_age_and_skips,
           test_volumes_password_excludes, test_safety_nets, test_existing_archives_and_verify, test_parallel,
-          test_future_dates, test_oneoff, test_recycle, test_settings):
+          test_future_dates, test_cancel_one_job, test_oneoff_auto, test_oneoff, test_recycle, test_settings):
     print(f"--- {t.__name__}")
     try:
         t()

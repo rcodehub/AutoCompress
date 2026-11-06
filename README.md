@@ -48,7 +48,7 @@ The share's root must be reachable inside the container: map the **share itself*
 
 ## Web UI
 
-- **Status** – next/last scan, **where compressed folders and archives go** (including the Recycle Bin location on your server and how many items are in it), progress, **folders waiting because they changed too recently** (with when each will be old enough), what each job is doing (with percent), problems and a live log. Buttons: **Run now**, **Dry run** (shows what would happen without changing anything), **Compress folder…**, **Stop**, **Check CRCs**.
+- **Status** – next/last scan, **where compressed folders and archives go** (including the Recycle Bin location on your server and how many items are in it), progress, **folders waiting because they changed too recently** (with when each will be old enough), what each job is doing (with percent), problems and a live log. Buttons: **Run now**, **Dry run** (shows what would happen without changing anything), **Compress folder…**, **Stop** (ends the whole run), a **Cancel** button on each folder that is being compressed (that folder only; nothing is changed and the other folders carry on), **Check CRCs**.
 - **Settings** – all options below, with a folder picker and live checks that show each folder's real location on the server.
 - **History** – every scan with counts, sizes and problems.
 - **Stats** – lifetime totals (data compressed, space saved, success rate, speed), a 30-day chart, results per compression level and records.
@@ -95,7 +95,7 @@ Each archive is built in a hidden work folder (`.autocompress-…`) next to its 
 
 Nothing is ever overwritten. A folder that fails is left untouched and listed with the reason; scheduled scans do not retry it until its contents change, **Run now** always does. Symbolic links inside a folder are stored as links, not followed.
 
-**Compress folder…** is a one-off job that does not depend on the scanned folders or the schedule: choose any folder inside the container and compress it as one archive, or compress each of its sub-folders. It uses the compression settings from the Settings page; for that run you can override what happens to the folder afterwards (delete, move, keep) and the output folder. Folders you pick this way are compressed regardless of the exclude list and the minimum age. It cannot start while a scan is running.
+**Compress folder…** is a one-off job that does not depend on the scanned folders or the schedule: choose any folder inside the container. It is scanned like a source folder - if it contains sub-folders, each one is compressed into its own archive (files directly inside the chosen folder are left alone); only a folder without sub-folders is compressed as a whole. It uses the compression settings from the Settings page; for that run you can override what happens to the folder afterwards (delete, move, keep) and the output folder. Folders you pick this way are compressed regardless of the exclude list and the minimum age. It cannot start while a scan is running.
 
 **Check CRCs** recalculates the CRC of every archive that has one in its name or in an SFV file in the source/output folders and reports any that no longer match.
 

@@ -2,6 +2,10 @@
 
 Newest first. The latest entries are copied into the Unraid template (shown in Community Applications) each time an image is published.
 
+### 2026-11-06
+- New **Cancel** button on every folder that is being compressed. It cancels just that folder: the unfinished archive is deleted, the folder is left exactly as it was and the other folders carry on. Scheduled scans leave a cancelled folder alone until it changes; Run now tries it again. Stop still ends the whole run.
+- **Compress folder…** now scans the folder you pick: if it has sub-folders, each sub-folder is compressed into its own archive (instead of the whole folder as one archive). A folder without sub-folders is compressed as a whole.
+
 ### 2026-11-04
 - Fix: files dated in the future (for example from a timezone mix-up on the computer that wrote them) no longer keep a folder waiting for hours. Their date is ignored and the time they arrived on the server is used. The Waiting card and the log now name the newest changed file, and warn about future-dated items.
 - New **Waiting** card on the Status page: folders skipped because they changed too recently are listed with their size and a countdown to when they are old enough, soonest first. It stays until the next scan starts.

@@ -153,8 +153,8 @@ dialog { border: var(--bw, 1px) solid var(--line); border-radius: var(--radius);
 dialog::backdrop { background: rgba(0,0,0,.5); }
 .dlg-h { padding: 12px 16px; border-bottom: 1px solid var(--line); font-weight: 600; }
 .dlg-b { padding: 8px 8px; max-height: 50vh; overflow: auto; }
-.dlg-b div { padding: 6px 10px; border-radius: 6px; cursor: pointer; font-family: var(--mono); font-size: 13px; }
-.dlg-b div:hover { background: var(--accent-soft); }
+#dlgList > div { padding: 6px 10px; border-radius: 6px; cursor: pointer; font-family: var(--mono); font-size: 13px; }
+#dlgList > div:hover { background: var(--accent-soft); }
 .dlg-f { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
 .dlg-f .path { margin-right: auto; }
 @media (max-width: 560px) { .top button { padding: 6px 10px; } }
@@ -253,6 +253,7 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
         <div><b id="cLeft">0</b><span>remaining</span></div>
         <div><b id="cComp">0</b><span>compressed</span></div>
         <div><b id="cFail">0</b><span>failed</span></div>
+        <div id="cCanBox" hidden><b id="cCan">0</b><span>cancelled</span></div>
         <div><b id="cSkip">0</b><span>skipped (archive exists)</span></div>
         <div><b id="cDef">0</b><span>too recent (skipped)</span></div>
         <div><b id="cCrc">0</b><span>checksums added</span></div>
@@ -263,8 +264,8 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
 
     <section class="card">
       <h2>Folders being compressed</h2>
-      <table><thead><tr><th>Job</th><th>Folder</th><th>Step</th><th style="text-align:right">Time</th></tr></thead>
-        <tbody id="threads"><tr><td colspan="4" class="idle">Not running</td></tr></tbody></table>
+      <table><thead><tr><th>Job</th><th>Folder</th><th>Step</th><th style="text-align:right">Time</th><th></th></tr></thead>
+        <tbody id="threads"><tr><td colspan="5" class="idle">Not running</td></tr></tbody></table>
     </section>
 
     <section class="card" id="failCard" hidden>
@@ -476,8 +477,7 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
     <p class="muted small" style="margin:0 0 10px">A one-off job. It ignores the scanned folders and the schedule and uses your compression settings (level, recovery record, checksum, password...).</p>
     <div class="field"><label for="onePath">Folder</label>
       <div class="row"><input type="text" id="onePath" spellcheck="false" placeholder="/source/Some Folder"><button class="small" id="oneBrowse" type="button">Browse...</button></div></div>
-    <div class="field"><label for="oneMode">What to compress</label>
-      <select id="oneMode"><option value="folder">This folder, as one archive</option><option value="children">Each sub-folder of this folder, as its own archive</option></select></div>
+    <div class="hint" style="margin:0 0 10px">The folder is scanned like a source folder: if it contains sub-folders, <b>each sub-folder becomes its own archive</b> and files directly inside it are left alone. Only a folder without sub-folders is compressed as a whole.</div>
     <div class="field"><label for="oneAction">After compressing</label>
       <select id="oneAction"><option value="">Use the setting</option><option value="recycle">Move the folder to the share's Recycle Bin</option><option value="delete">Delete the folder</option><option value="move">Move the folder to the move folder</option><option value="keep">Keep the folder</option></select></div>
     <div class="field"><label for="oneOut">Put the archive in <span class="muted">(optional, otherwise the setting)</span></label>
@@ -679,22 +679,40 @@ function renderStatus(d) {
     $("barfill").style.width = (e.found ? Math.min(100, e.done / e.found * 100) : 0) + "%";
   }
   renderWaiting(e, s, now);
+  $("cCanBox").hidden = !e.cancelled; $("cCan").textContent = e.cancelled || 0;
   $("cSkip").textContent = e.skipped; $("cDef").textContent = e.deferred; $("cCrc").textContent = e.crc_added;
   $("cData").textContent = fmtSize(e.bytes_in || 0); $("cOut").textContent = fmtSize(e.bytes_out || 0);
 
-  const tb = $("threads"); tb.replaceChildren();
-  if (!e.slots.length) tb.append(h("tr", {}, h("td", { colspan: 4, class: "idle" }, "Not running")));
-  for (const sl of e.slots) {
-    const step = sl.path ? [sl.phase === "compressing" ? "Compressing" : sl.phase === "testing" ? "Testing" : sl.phase === "comparing" ? "Comparing"
-      : sl.phase === "checksum" ? "Checksum" : sl.phase === "finishing" ? "Finishing" : "Starting"] : [];
-    if (sl.path && sl.pct != null && (sl.phase === "compressing" || sl.phase === "testing")) {
-      step.push(" " + sl.pct + "%", h("span", { class: "pctbar" }, h("i", { style: "width:" + sl.pct + "%" })));
+  const tb = $("threads");
+  if (!e.slots.length) { tb.replaceChildren(h("tr", {}, h("td", { colspan: 5, class: "idle" }, "Not running"))); }
+  else {
+    if (tb.querySelector("td.idle[colspan]")) tb.replaceChildren();
+    for (const sl of e.slots) {
+      const step = sl.path ? [sl.phase === "compressing" ? "Compressing" : sl.phase === "testing" ? "Testing" : sl.phase === "comparing" ? "Comparing"
+        : sl.phase === "checksum" ? "Checksum" : sl.phase === "finishing" ? "Finishing" : "Starting"] : [];
+      if (sl.path && sl.pct != null && (sl.phase === "compressing" || sl.phase === "testing")) {
+        step.push(" " + sl.pct + "%", h("span", { class: "pctbar" }, h("i", { style: "width:" + sl.pct + "%" })));
+      }
+      let tr = tb.querySelector('tr[data-slot="' + sl.n + '"]');
+      if (!tr || tr.dataset.path !== (sl.path || "")) {          // a new job in this slot: build the row
+        tr = h("tr", { "data-slot": sl.n, "data-path": sl.path || "" },
+          h("td", { class: "n" }, "#" + sl.n),
+          h("td", { class: sl.path ? "path" : "idle" }, sl.path || "idle"),
+          h("td", { class: "step" }), h("td", { class: "t" }), h("td", { class: "act", style: "text-align:right" }));
+        const old = tb.querySelector('tr[data-slot="' + sl.n + '"]');
+        if (old) old.replaceWith(tr); else tb.append(tr);
+      }
+      // update in place so a click on Cancel is never lost to a refresh
+      tr.querySelector(".step").replaceChildren(...step);
+      tr.querySelector(".t").textContent = sl.path ? dur(sl.elapsed) : "";
+      const act = tr.querySelector(".act");
+      const canCancel = !!sl.path && sl.phase !== "finishing" && e.state !== "stopping";
+      if (canCancel && !act.firstChild) act.append(h("button", {
+        class: "small", title: "Cancel this folder only - nothing is changed and the other folders carry on",
+        onclick: async (ev) => { ev.target.disabled = true; try { await post("/api/cancel", { path: sl.path }); } catch (err) { banner("bad", err.message); } pollStatus(); },
+      }, "Cancel"));
+      if (!canCancel) act.replaceChildren();
     }
-    tb.append(h("tr", {},
-      h("td", { class: "n" }, "#" + sl.n),
-      h("td", { class: sl.path ? "path" : "idle" }, sl.path || "idle"),
-      h("td", { class: "step" }, step),
-      h("td", { class: "t" }, sl.path ? dur(sl.elapsed) : "")));
   }
 
   $("failCard").hidden = !e.failures.length;
@@ -740,7 +758,7 @@ $("oneOutBrowse").addEventListener("click", () => pickFolder($("oneOut").value |
 async function startOne(dry) {
   $("oneErr").hidden = true;
   try {
-    await post("/api/run-folder", { path: $("onePath").value.trim(), mode: $("oneMode").value, source_action: $("oneAction").value,
+    await post("/api/run-folder", { path: $("onePath").value.trim(), source_action: $("oneAction").value,
       output_dir: $("oneOut").value.trim(), dry_run: dry });
     $("dlgOne").close(); pollStatus();
   } catch (e) { $("oneErr").textContent = e.message; $("oneErr").hidden = false; }

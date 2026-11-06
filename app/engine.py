@@ -140,8 +140,10 @@ class Engine:
         self.waiting = {}            # path -> {"ready_at", "files", "bytes"}: when each of those becomes old enough
         self.skipped = 0             # folders skipped because an archive of that name already exists / failed before
         self.crc_added = 0
+        self.cancelled = 0           # folders whose compression was cancelled by the user
         self.verified = {"checked": 0, "ok": 0, "bad": 0, "missing": 0}
         self._slots = []
+        self._slot_procs = {}        # slot -> running rar processes of that job (so one job can be cancelled alone)
         self._ex_cache = {}          # out_dir -> archive names already there (lower case)
         self._claimed = set()
 
@@ -227,7 +229,8 @@ class Engine:
             ] if self.status["state"] != "idle" else []
             s["found"] = self.found
             s["failed"] = sum(1 for f in self.failures if not f.get("warn"))
-            s["done"] = s["compressed"] + s["failed"]
+            s["cancelled"] = self.cancelled
+            s["done"] = s["compressed"] + s["failed"] + self.cancelled
             s["remaining"] = max(0, s["found"] - s["done"])
             s["deferred"] = len(self.deferred)
             s["waiting"] = sorted(({"path": k, **v} for k, v in self.waiting.items()), key=lambda w: w["ready_at"])[:30]
@@ -280,6 +283,19 @@ class Engine:
             return os.path.join(cfg["output_dir"], os.path.basename(root.rstrip(os.sep)) or "root")
         return cfg["output_dir"]
 
+    def subfolders(self, path, cfg):
+        """Names of the sub-folders of `path` that would be compressed (excluded names do not count)."""
+        try:
+            with os.scandir(path) as it:
+                return sorted(e.name for e in it if e.is_dir(follow_symlinks=False) and not self._excluded(e.name, cfg))
+        except OSError:
+            return []
+
+    def oneoff_mode(self, path, cfg):
+        """A one-off folder is scanned like a source folder: each sub-folder becomes its own archive. Only a folder
+        without sub-folders is compressed as a whole."""
+        return "children" if self.subfolders(path, cfg) else "folder"
+
     def _excluded(self, name, cfg):
         if name.startswith(WORK_PREFIX):
             return True
@@ -300,14 +316,17 @@ class Engine:
                 target = os.path.realpath(oneoff["path"])
                 if not os.path.isdir(target):
                     raise RuntimeError(f"Folder not found: {target}")
-                if oneoff["mode"] == "folder":
+                mode = oneoff["mode"] if oneoff["mode"] in ("folder", "children") else self.oneoff_mode(target, cfg)
+                if mode == "folder":
                     if target == os.sep:
                         raise RuntimeError("The root folder cannot be compressed as one archive")
                     sources, only = [os.path.dirname(target)], os.path.basename(target)
-                    self.log("info", f"One-off: compressing the folder {target}")
+                    self.log("info", f"One-off: {target} has no sub-folders - compressing the folder itself")
                 else:
                     sources = [target]
-                    self.log("info", f"One-off: compressing every sub-folder of {target}")
+                    n = len(self.subfolders(target, cfg))
+                    self.log("info", f"One-off: {target} has {n} sub-folder{'s' if n != 1 else ''} - compressing each one into its "
+                                     "own archive (files directly inside it are left alone)")
             else:
                 for s in cfg["sources"]:
                     s = os.path.realpath(s)
@@ -417,7 +436,7 @@ class Engine:
                 "started_at": st["started_at"], "finished_at": st["finished_at"], "trigger": trigger,
                 "mode": st["mode"], "dry_run": dry_run, "result": result, "message": message,
                 "found": self.found, "compressed": st["compressed"], "failed": failed,
-                "deferred": len(self.deferred), "skipped": self.skipped, "crc_added": self.crc_added,
+                "deferred": len(self.deferred), "skipped": self.skipped, "crc_added": self.crc_added, "cancelled": self.cancelled,
                 "files": st["files"], "bytes_in": st["bytes_in"], "bytes_out": st["bytes_out"],
                 "verified": dict(self.verified) if verify_only else None,
                 "failures": self.failures[-50:],
@@ -555,7 +574,7 @@ class Engine:
                     continue
                 if failed_before.get(e.path) == self._signature(info):
                     self.skipped += 1
-                    self.log("info", f"Skipped {e.path}: it failed earlier and has not changed (press Run now to retry)")
+                    self.log("info", f"Skipped {e.path}: it failed or was cancelled earlier and has not changed (press Run now to retry)")
                     continue
                 self._claimed.add(key)
                 jobs.append(dict(path=e.path, name=name, root=root, out_dir=out_dir, **info))
@@ -575,13 +594,40 @@ class Engine:
         with self.lock:
             for i, sl in enumerate(self._slots):
                 if sl is None:
-                    self._slots[i] = {"path": path, "t": time.time(), "phase": "starting", "pct": None}
+                    self._slots[i] = {"path": path, "t": time.time(), "phase": "starting", "pct": None, "cancel": False}
                     return i
         return 0
 
     def _release_slot(self, i):
         with self.lock:
             self._slots[i] = None
+
+    def _halted(self, slot):
+        """True when the whole run was stopped or this one job was cancelled."""
+        if self.stop_event.is_set():
+            return True
+        sl = self._slots[slot] if slot is not None and slot < len(self._slots) else None
+        return bool(sl and sl.get("cancel"))
+
+    def cancel_job(self, path):
+        """Cancel the compression of one folder while the others carry on. Nothing is changed: the unfinished
+        archive is deleted and the folder stays as it is. Possible until the job starts finishing."""
+        with self.lock:
+            for i, sl in enumerate(self._slots):
+                if sl and sl["path"] == path:
+                    if sl["phase"] == "finishing":
+                        return False, "It is already finishing - too late to cancel"
+                    sl["cancel"] = True
+                    for p in list(self._slot_procs.get(i, ())):
+                        try:
+                            os.killpg(p.pid, signal.SIGTERM)
+                        except OSError:
+                            pass
+                    break
+            else:
+                return False, "That folder is not being compressed any more"
+        self.log("warn", f"Cancel requested: {path}")
+        return True, ""
 
     def _phase(self, slot, phase, pct=None):
         with self.lock:
@@ -603,6 +649,15 @@ class Engine:
         except Failed as e:
             if self.stop_event.is_set():
                 self.log("warn", f"Stopped: {job['path']}")
+                return "fail"
+            if self._halted(slot):                           # cancelled by the user
+                with self.lock:
+                    self.cancelled += 1
+                failed = self._load_failed()
+                failed[job["path"]] = self._signature(job)   # scheduled scans leave it alone until it changes
+                self._save_failed(failed)
+                self.log("warn", f"Cancelled: {job['path']} - nothing was changed. Scheduled scans skip it until it "
+                                 "changes; Run now (or Compress folder...) tries it again")
                 return "fail"
             self._fail(job["path"], str(e))
             if e.remember:
@@ -645,6 +700,8 @@ class Engine:
 
     def _exec(self, cmd, cwd, slot=None, phase=""):
         """Run a command in its own process group (so Stop can kill it) and follow rar's percent output."""
+        if slot is not None and self._halted(slot):
+            return None, "cancelled"
         try:
             p = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, start_new_session=True)
@@ -652,6 +709,13 @@ class Engine:
             return None, str(e)
         with self.lock:
             self.procs.add(p)
+            if slot is not None:
+                self._slot_procs.setdefault(slot, set()).add(p)
+        if slot is not None and self._halted(slot):       # cancelled between the check and the start
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+            except OSError:
+                pass
         tail = b""
         try:
             while True:
@@ -667,6 +731,8 @@ class Engine:
         finally:
             with self.lock:
                 self.procs.discard(p)
+                if slot is not None:
+                    self._slot_procs.get(slot, set()).discard(p)
         return p.returncode, tail.decode("utf-8", "replace")
 
     @staticmethod
@@ -732,7 +798,7 @@ class Engine:
             else:
                 cwd, target = path, "*"
             code, out = self._exec(self._rar_command(cfg, archive, target), cwd, slot, "compressing")
-            if self.stop_event.is_set():
+            if self._halted(slot):
                 raise Failed("stopped")
             if code != 0:
                 raise Failed(self._rar_error(code, out) + (f" (some files could not be read: {job['error']})" if job["error"] else ""), True)
@@ -753,6 +819,8 @@ class Engine:
                 if not cfg["exclude_files"]:
                     self._phase(slot, "comparing")
                     n = self._count_files(rar, vols, pw, work)
+                    if self._halted(slot):
+                        raise Failed("stopped")
                     if n != job["files"]:
                         raise Failed(f"the archive holds {n} files but the folder has {job['files']} - not removing anything", True)
             # ---- 3. checksum
@@ -764,7 +832,7 @@ class Engine:
             if mode != "none":
                 self._phase(slot, "checksum")
                 for f in vols:
-                    crcs[f] = crc32_file(os.path.join(work, f), self.stop_event.is_set)
+                    crcs[f] = crc32_file(os.path.join(work, f), lambda: self._halted(slot))
             placed = {}                                    # work file -> final name
             for f in vols:
                 placed[f] = f"{name} [{crcs[f]}].rar" if mode == "filename" else f
