@@ -252,11 +252,11 @@ UI_THEMES = ("default", "unraid", "midnight", "nord", "dracula", "solarized", "f
 def json_body():
     """The JSON object sent by the browser: (dict, None), or (None, 400 response) when it is anything else."""
     body = request.get_json(silent=True)
-    if body is None and not request.get_data():
+    if isinstance(body, dict):
+        return body, None
+    if body is None and not request.get_data().strip():      # an empty or whitespace-only body counts as {}
         return {}, None
-    if not isinstance(body, dict):
-        return None, (jsonify(ok=False, error="The request body must be a JSON object"), 400)
-    return body, None
+    return None, (jsonify(ok=False, error="The request body must be a JSON object"), 400)
 
 
 def load_ui():

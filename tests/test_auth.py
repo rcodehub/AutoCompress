@@ -108,6 +108,8 @@ r = c.post("/api/cancel", json={"path": "/nothing"})
 check("an object body still works", r.status_code == 409)
 r = c.post("/api/ui", data="", content_type="application/json")
 check("an empty body is still treated as {}", r.status_code == 200)
+r = c.post("/api/ui", data="  \n ", content_type="application/json")
+check("a whitespace-only body is treated as {}", r.status_code == 200)
 
 # --- no password = open
 m = load_app()
