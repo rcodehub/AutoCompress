@@ -135,16 +135,19 @@ def check(data, roots=None):
             s[key] = v
 
     s["sources"] = [os.path.normpath(p) for p in _lines(data.get("sources", s["sources"]))]
+    bad_sources = set()
     for p in s["sources"]:
         if not p.startswith("/"):
             errors.append(f"Source folder must be an absolute path: {p}")
-            bad.add("sources")
+            bad_sources.add(p)
         elif _within(p, CONFIG_DIR):
             errors.append(f"Source folder {p} is the app data folder - choose a folder such as /source")
-            bad.add("sources")
+            bad_sources.add(p)
         elif roots is not None and not mounts.inside_roots(p, roots):
             errors.append(f"Source folder {p} is not inside a folder mapped into the container")
-            bad.add("sources")
+            bad_sources.add(p)
+    # only the invalid source folders are dropped; the valid ones stay (a save is refused anyway)
+    s["sources"] = [p for p in s["sources"] if p not in bad_sources]
 
     for k in ("schedule_enabled", "run_on_start", "solid", "include_root", "encrypt_names", "verify",
               "checksum_existing", "set_perms", "chown_enabled"):

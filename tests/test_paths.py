@@ -114,6 +114,11 @@ cfg_now, problems, source = S.load_with_report()
 check("lenient load keeps valid values", cfg_now["parallel_jobs"] == 7 and cfg_now["sources"] == [dl]
       and cfg_now["exclude_files"] == ["*.nfo"] and cfg_now["schedule_enabled"] is True, cfg_now)
 check("lenient load reports the bad one", source == "file" and any("interval" in x.lower() for x in problems), problems)
+# one unmapped source must not take the valid ones with it
+open(S.SETTINGS_PATH, "w").write(json.dumps({"sources": [dl, "/nowhere/unmapped"], "parallel_jobs": 5}))
+cfg_now, problems, source = S.load_with_report()
+check("lenient load drops only the invalid source", cfg_now["sources"] == [dl] and cfg_now["parallel_jobs"] == 5, cfg_now["sources"])
+check("lenient load reports the dropped source", any("/nowhere/unmapped" in x for x in problems), problems)
 d = c.get("/api/settings").get_json()
 check("api/settings exposes problems + storage",
       d["problems"] and d["storage"]["source"] == "file" and d["storage"]["path"] == S.SETTINGS_PATH
@@ -209,10 +214,10 @@ check("lenient load: bad output folder is reset, the rest is kept",
 open(S.SETTINGS_PATH, "w").write(json.dumps({"sources": [dl, "/nowhere"], "source_action": "move",
                                               "move_dir": cfg + "/trash"}))
 cfg_now, problems, source = S.load_with_report()
-check("lenient load: bad sources and move folder go back to their defaults",
-      cfg_now["sources"] == [] and cfg_now["move_dir"] == "" and cfg_now["source_action"] == S.DEFAULTS["source_action"], cfg_now)
+check("lenient load: the bad source is dropped, the bad move folder goes back to its default",
+      cfg_now["sources"] == [dl] and cfg_now["move_dir"] == "" and cfg_now["source_action"] == S.DEFAULTS["source_action"], cfg_now)
 d = c.get("/api/settings").get_json()
-check("the banner problems match what was reset", len(d["problems"]) == 2 and d["settings"]["sources"] == [], d["problems"])
+check("the banner problems match what was reset", len(d["problems"]) == 2 and d["settings"]["sources"] == [dl], d["problems"])
 c.post("/api/settings", json={"sources": [dl], "schedule_enabled": False, "source_action": "keep"})
 
 # --- nothing mapped: the picker says so
