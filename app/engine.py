@@ -31,6 +31,9 @@ CRC_RE = re.compile(r" \[([0-9A-Fa-f]{8})\]$")
 PART_RE = re.compile(r"^(.*)\.part0*(\d+)\.rar$", re.I)
 EXISTING_RE = re.compile(r"^(.*?)(?: \[[0-9A-Fa-f]{8}\])?(?:\.part0*1)?\.rar$", re.I)
 
+FAILED_MAX = 5000                       # entries kept in the remembered-state file
+TRANSIENT_CODES = (5, 8)                # rar: write error, not enough memory - often a side effect of running in parallel
+
 RAR_CODES = {1: "warning - some files could not be read (in use, or no permission?)", 2: "fatal error",
              3: "checksum error - the archive is damaged", 4: "the archive is locked",
              5: "write error - disk full, or no permission to write?", 6: "could not open a file",
@@ -40,11 +43,13 @@ RAR_CODES = {1: "warning - some files could not be read (in use, or no permissio
 
 
 class Failed(Exception):
-    """A folder could not be compressed. remember=True: don't retry on scheduled scans until it changes."""
+    """A folder could not be compressed. remember=True: don't retry on scheduled scans until it changes.
+    transient=True: worth one more try on its own after the other jobs are done."""
 
-    def __init__(self, msg, remember=False):
+    def __init__(self, msg, remember=False, transient=False):
         super().__init__(msg)
         self.remember = remember
+        self.transient = transient      # may work when tried again on its own (out of memory, disk full, ...)
 
 
 def human(n):
@@ -109,6 +114,7 @@ class Engine:
         self.history_path = history_path
         data_dir = os.path.dirname(history_path) or "."
         self.failed_path = os.path.join(data_dir, "failed-folders.json")
+        self.failed_lock = threading.Lock()     # one load-modify-save of the remembered state at a time
         self.tools = which_tools()
 
         self.log_buf = deque(maxlen=2000)
@@ -146,6 +152,7 @@ class Engine:
         self._slot_procs = {}        # slot -> running rar processes of that job (so one job can be cancelled alone)
         self._ex_cache = {}          # out_dir -> archive names already there (lower case)
         self._claimed = set()
+        self._mounts = []            # mapped folders (refreshed at the start of every run)
 
     # ------------------------------------------------------------ logging
     def log(self, level, msg):
@@ -199,13 +206,28 @@ class Engine:
             return {}
 
     def _save_failed(self, d):
+        """Write the remembered state: entries whose folder is gone are dropped, the newest FAILED_MAX are kept.
+        Call with failed_lock held (use _update_failed)."""
+        keep = dict(list({p: v for p, v in d.items() if os.path.exists(p)}.items())[-FAILED_MAX:])
         try:
             tmp = self.failed_path + ".tmp"
             with open(tmp, "w") as f:
-                json.dump(d, f)
+                json.dump(keep, f)
             os.replace(tmp, self.failed_path)
         except OSError:
             pass
+
+    def _update_failed(self, path, signature=None):
+        """Remember `path` with its signature, or forget it (signature None) - atomically, as jobs run in parallel."""
+        with self.failed_lock:
+            d = self._load_failed()
+            if signature is None:
+                if d.pop(path, None) is None:
+                    return
+            else:
+                d.pop(path, None)                   # re-insert at the end: the oldest entries go first
+                d[path] = signature
+            self._save_failed(d)
 
     # ------------------------------------------------------------ status
     def _blank_status(self):
@@ -224,7 +246,7 @@ class Engine:
             now = time.time()
             s["slots"] = [
                 ({"n": i + 1, "path": sl["path"], "phase": sl["phase"], "pct": sl["pct"],
-                  "elapsed": int(now - sl["t"])} if sl else {"n": i + 1, "path": None, "elapsed": 0})
+                  "elapsed": int(now - sl["t"]), "cancel": bool(sl.get("cancel"))} if sl else {"n": i + 1, "path": None, "elapsed": 0, "cancel": False})
                 for i, sl in enumerate(self._slots)
             ] if self.status["state"] != "idle" else []
             s["found"] = self.found
@@ -297,8 +319,8 @@ class Engine:
         return "children" if self.subfolders(path, cfg) else "folder"
 
     def _excluded(self, name, cfg):
-        if name.startswith(WORK_PREFIX):
-            return True
+        if name.startswith(WORK_PREFIX) or name == mounts.RECYCLE_NAME:
+            return True                                 # never the work folders or the Recycle Bin
         low = name.lower()
         return any(fnmatch.fnmatch(low, p.lower()) for p in cfg["exclude_dirs"])
 
@@ -339,8 +361,9 @@ class Engine:
             self._check_folders(cfg, sources)
             if not dry_run and not verify_only:
                 self._prepare_folders(cfg, sources)
-            for d in self._archive_dirs(sources, cfg):
-                self._remove_stale_work(d)
+            if not dry_run:                          # a dry run changes nothing
+                for d in self._archive_dirs(sources, cfg):
+                    self._remove_stale_work(d)
 
             if verify_only:
                 self._verify_checksums(sources, cfg)
@@ -355,8 +378,11 @@ class Engine:
                         self._dry(j, cfg)
                 else:
                     with ThreadPoolExecutor(max_workers=cfg["parallel_jobs"]) as pool:
-                        for f in [pool.submit(self._work, j, cfg) for j in jobs]:
-                            f.result()
+                        results = [(j, f.result()) for j, f in [(j, pool.submit(self._work, j, cfg)) for j in jobs]]
+                    for j, r in results:             # transient failures get a second try, one at a time
+                        if r == "retry" and not self.stop_event.is_set():
+                            self.log("info", f"Retrying on its own: {j['path']}")
+                            self._work(j, cfg, True)
                 if (not oneoff and cfg["checksum_existing"] and cfg["checksum_mode"] != "none"
                         and not self.stop_event.is_set()):
                     self._existing_pass(sources, cfg, dry_run)
@@ -369,15 +395,17 @@ class Engine:
             self._finish(trigger, dry_run, verify_only, result, message)
 
     def _check_folders(self, cfg, sources):
+        self._mounts = mounts.list_mounts(os.path.dirname(self.failed_path))
         if cfg["source_action"] == "recycle":
-            self._mounts = mounts.list_mounts(os.path.dirname(self.failed_path))
             for s in sources:
                 _, why = mounts.recycle_target(os.path.join(s, "x"), self._mounts)
                 if why:
                     raise RuntimeError(f"Cannot use the Recycle Bin for {s}: {why}. "
                                        "Choose another action for the original folder in Settings.")
-                self.log("info", f"Compressed folders from {s} go to the Recycle Bin: "
-                                 f"{mounts.recycle_root(os.path.join(s, 'x'), self._mounts)[0]}")
+                rb = mounts.recycle_root(os.path.join(s, "x"), self._mounts)[0]
+                host = mounts.path_info(rb, self._mounts)["host"]
+                self.log("info", f"Compressed folders from {s} go to the Recycle Bin: {rb}"
+                                 + (f" (on the server: {host})" if host else ""))
         mv = cfg["move_dir"]
         if cfg["source_action"] == "move":
             if not mv:
@@ -635,16 +663,25 @@ class Engine:
                 self._slots[slot]["phase"] = phase
                 self._slots[slot]["pct"] = pct
 
-    def _work(self, job, cfg):
+    def _enter_finishing(self, slot):
+        """Switch to "finishing" (after this the job can no longer be cancelled) - unless it was stopped or cancelled
+        just before: checked under the same lock cancel_job uses, so a cancel is either refused or honoured."""
+        with self.lock:
+            if self._halted(slot):
+                raise Failed("stopped")
+            if slot < len(self._slots) and self._slots[slot]:
+                self._slots[slot]["phase"] = "finishing"
+                self._slots[slot]["pct"] = None
+
+    def _work(self, job, cfg, final=False):
+        """Returns "ok", "retry" (failed in a way that may pass when tried again on its own) or "fail"."""
         if self.stop_event.is_set():
             return "fail"
         slot = self._acquire_slot(job["path"])
         try:
             self.log("info", f"[job {slot + 1}] Compressing {job['path']} ({job['files']} files, {human(job['bytes'])})")
             self._compress(job, cfg, slot)
-            failed = self._load_failed()
-            if failed.pop(job["path"], None) is not None:
-                self._save_failed(failed)
+            self._update_failed(job["path"])
             return "ok"
         except Failed as e:
             if self.stop_event.is_set():
@@ -653,17 +690,16 @@ class Engine:
             if self._halted(slot):                           # cancelled by the user
                 with self.lock:
                     self.cancelled += 1
-                failed = self._load_failed()
-                failed[job["path"]] = self._signature(job)   # scheduled scans leave it alone until it changes
-                self._save_failed(failed)
+                self._update_failed(job["path"], self._signature(job))   # scheduled scans leave it alone until it changes
                 self.log("warn", f"Cancelled: {job['path']} - nothing was changed. Scheduled scans skip it until it "
                                  "changes; Run now (or Compress folder...) tries it again")
                 return "fail"
+            if e.transient and not final:
+                self.log("warn", f"Failed, will retry on its own after the other folders: {job['path']} - {e}")
+                return "retry"
             self._fail(job["path"], str(e))
             if e.remember:
-                failed = self._load_failed()
-                failed[job["path"]] = self._signature(job)
-                self._save_failed(failed)
+                self._update_failed(job["path"], self._signature(job))
             return "fail"
         except Exception as e:  # noqa: BLE001 - one folder must never stop the others
             self._fail(job["path"], f"unexpected error: {e}")
@@ -736,6 +772,11 @@ class Engine:
         return p.returncode, tail.decode("utf-8", "replace")
 
     @staticmethod
+    def _transient(code, out):
+        """Out of memory, write error or no space: can pass when the job runs alone."""
+        return code in TRANSIENT_CODES or "no space left" in (out or "").lower()
+
+    @staticmethod
     def _rar_error(code, out):
         text = re.sub(r"[\x08\r]+", "\n", out)
         lines = [ln.strip() for ln in text.splitlines()
@@ -744,7 +785,7 @@ class Engine:
         why = RAR_CODES.get(code, "") if code is not None else ""
         return f"rar exit code {code}" + (f" ({why})" if why else "") + (f": {tail}" if tail else "")
 
-    def _count_files(self, rar, vols, pw, cwd):
+    def _count_files(self, rar, vols, pw, cwd, slot=None):
         """Number of files stored in the archive: `rar lt` lists one volume at a time, and a file that continues
         in the next volume is listed in both, so names are collected in a set."""
         names = set()
@@ -754,6 +795,13 @@ class Engine:
                                  stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True)
             with self.lock:
                 self.procs.add(p)
+                if slot is not None:
+                    self._slot_procs.setdefault(slot, set()).add(p)
+            if slot is not None and self._halted(slot):     # cancelled between the check and the start
+                try:
+                    os.killpg(p.pid, signal.SIGTERM)
+                except OSError:
+                    pass
             try:
                 last = None
                 for ln in p.stdout:
@@ -766,6 +814,10 @@ class Engine:
             finally:
                 with self.lock:
                     self.procs.discard(p)
+                    if slot is not None:
+                        self._slot_procs.get(slot, set()).discard(p)
+            if slot is not None and self._halted(slot):
+                raise Failed("stopped")
             if p.returncode != 0:
                 raise Failed(f"listing the archive failed (rar exit code {p.returncode})", True)
         return len(names)
@@ -783,7 +835,8 @@ class Engine:
         except OSError as e:
             raise Failed(f"cannot use the output folder {out_dir}: {e}")
         if free < need:
-            raise Failed(f"not enough free space in {out_dir} (up to {human(need)} needed, {human(free)} free)")
+            raise Failed(f"not enough free space in {out_dir} (up to {human(need)} needed, {human(free)} free)",
+                         transient=True)       # other jobs' work files may be using it right now
         try:
             work = tempfile.mkdtemp(prefix=WORK_PREFIX, dir=out_dir)
         except OSError as e:
@@ -801,7 +854,8 @@ class Engine:
             if self._halted(slot):
                 raise Failed("stopped")
             if code != 0:
-                raise Failed(self._rar_error(code, out) + (f" (some files could not be read: {job['error']})" if job["error"] else ""), True)
+                raise Failed(self._rar_error(code, out) + (f" (some files could not be read: {job['error']})" if job["error"] else ""),
+                             True, self._transient(code, out))
             vols = sorted((f for f in os.listdir(work) if f.lower().endswith(".rar")),
                           key=lambda f: (int(PART_RE.match(f).group(2)) if PART_RE.match(f) else 0, f))
             if not vols:
@@ -812,13 +866,14 @@ class Engine:
                 self._phase(slot, "testing", 0)
                 code, out = self._exec([rar, "t", "-idc", "-y"] + ([f"-hp{pw}"] if pw else []) + ["--", first],
                                        work, slot, "testing")
-                if self.stop_event.is_set():
+                if self._halted(slot):
                     raise Failed("stopped")
                 if code != 0:
-                    raise Failed("the finished archive failed its test - " + self._rar_error(code, out), True)
+                    raise Failed("the finished archive failed its test - " + self._rar_error(code, out), True,
+                                 self._transient(code, out))
                 if not cfg["exclude_files"]:
                     self._phase(slot, "comparing")
-                    n = self._count_files(rar, vols, pw, work)
+                    n = self._count_files(rar, vols, pw, work, slot)
                     if self._halted(slot):
                         raise Failed("stopped")
                     if n != job["files"]:
@@ -845,7 +900,7 @@ class Engine:
                         fh.write(f"{f} {crcs[f]}\n")
                 placed[name + ".sfv"] = name + ".sfv"
             # ---- 4. did the folder change meanwhile?
-            self._phase(slot, "finishing")
+            self._enter_finishing(slot)
             after = self._inspect(path)
             if self._signature(after) != self._signature(job):
                 raise Failed("the folder changed while it was being compressed - the archive was discarded and "
@@ -867,7 +922,7 @@ class Engine:
         bytes_out = sum(os.path.getsize(os.path.join(out_dir, final)) for f, final in placed.items() if final.endswith(".rar"))
         final_names = [v for k, v in placed.items() if v.endswith(".rar")]
         # ---- 6. the folder itself
-        action, problem, where = cfg["source_action"], None, None
+        action, problem, where, shown = cfg["source_action"], None, None, None
         try:
             if action == "delete":
                 shutil.rmtree(path)
@@ -876,7 +931,16 @@ class Engine:
             elif action == "recycle":
                 where = self._recycle_dir(path, cfg)
         except (OSError, RuntimeError) as e:
-            problem, action = f"the archive was created and tested, but the folder could not be {'removed' if action == 'delete' else 'moved'}: {e}", "keep"
+            what, left = "removed" if action == "delete" else "moved", None
+            if action == "delete":
+                left = self._inspect(path)["files"] if os.path.isdir(path) else 0
+            if left is not None and left < job["files"]:      # rmtree got part of the way
+                problem = (f"the archive was created and tested, but the folder could only be partly removed "
+                           f"({job['files'] - left} of {job['files']} files deleted, {left} left): {e}")
+                shown = "partly removed"
+            else:
+                problem, shown = f"the archive was created and tested, but the folder could not be {what}: {e}", None
+            action = "keep"
         with self.lock:
             self.status["compressed"] += 1
             self.status["files"] += job["files"]
@@ -886,7 +950,7 @@ class Engine:
         ratio = f", {100 * (1 - bytes_out / job['bytes']):.0f}% smaller" if job["bytes"] and bytes_out < job["bytes"] else ""
         self.log("info", f"Done: {name} -> {final_names[0]}{' (+' + str(len(vols) - 1) + ' volumes)' if len(vols) > 1 else ''}"
                          f" - {human(job['bytes'])} -> {human(bytes_out)}{ratio} in {secs:.0f}s"
-                         f"{', folder ' + {'delete': 'deleted', 'move': 'moved', 'recycle': 'moved to the Recycle Bin: ' + str(where)}.get(action, 'kept')}")
+                         f"{', folder ' + (shown or {'delete': 'deleted', 'move': 'moved', 'recycle': 'moved to the Recycle Bin: ' + str(where)}.get(action, 'kept'))}")
         if problem:
             self._fail(path, problem, warn=True)
 

@@ -519,6 +519,204 @@ def test_recycle():
     shutil.rmtree(work)
 
 
+def logtext(eng):
+    return "\n".join(x["msg"] for x in eng.log_since(0))
+
+
+def test_failed_state():
+    import threading
+    work, eng = fresh()
+    d = os.path.join(work, "dirs")
+    paths = []
+    for i in range(60):
+        paths.append(os.path.join(d, f"f{i}"))
+        os.makedirs(paths[-1])
+    ts = [threading.Thread(target=eng._update_failed, args=(p, f"1:{i}:0")) for i, p in enumerate(paths)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    check("failed state: parallel updates are not lost", set(eng._load_failed()) == set(paths), len(eng._load_failed()))
+    shutil.rmtree(paths[0])
+    eng._update_failed(paths[1])                                    # forget one -> saving also drops vanished folders
+    left = eng._load_failed()
+    check("failed state: forgotten and vanished folders are dropped", paths[0] not in left and paths[1] not in left
+          and len(left) == 58, len(left))
+    import engine as E
+    old = E.FAILED_MAX
+    E.FAILED_MAX = 10
+    try:
+        eng._update_failed(paths[2], "9:9:9")
+    finally:
+        E.FAILED_MAX = old
+    left = eng._load_failed()
+    check("failed state: capped, newest kept", len(left) == 10 and paths[2] in left, len(left))
+    shutil.rmtree(work)
+
+
+def test_exclusions_and_dry_run():
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    make_folders(src)
+    os.makedirs(f"{src}/.Recycle.Bin/Gone")
+    with open(f"{src}/.Recycle.Bin/Gone/x.txt", "w") as f:
+        f.write("deleted earlier")
+    s = run(eng, base_cfg(sources=[src], exclude_dirs=[]))
+    check("recycle bin: never compressed, even without exclude patterns",
+          s["compressed"] == 2 and os.path.isfile(f"{src}/.Recycle.Bin/Gone/x.txt")
+          and not any(x.startswith(".Recycle") for x in rars(src)), (s["compressed"], os.listdir(src)))
+    shutil.rmtree(work)
+
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    make_folders(src)
+    stale = f"{src}/.autocompress-stale"
+    os.makedirs(stale)
+    with open(f"{stale}/part.rar", "w") as f:
+        f.write("x")
+    run(eng, base_cfg(sources=[src]), dry=True)
+    check("dry run: stale work folder is left alone", os.path.isfile(f"{stale}/part.rar"), os.listdir(src))
+    run(eng, base_cfg(sources=[src]))
+    check("real run: stale work folder is removed", not os.path.exists(stale), os.listdir(src))
+    shutil.rmtree(work)
+
+
+def retry_rar(work, fail_times):
+    """A rar wrapper whose `a` command fails with exit code 8 the first `fail_times` times."""
+    p = os.path.join(work, "retryrar.sh")
+    cnt = os.path.join(work, "count")
+    with open(p, "w") as f:
+        f.write(f'#!/bin/bash\nif [ "$1" = a ]; then\n echo x >> "{cnt}"\n'
+                f' if [ $(wc -l < "{cnt}") -le {fail_times} ]; then echo "Not enough memory"; exit 8; fi\nfi\n'
+                f'exec "{RAR}" "$@"\n')
+    os.chmod(p, 0o755)
+    return p, cnt
+
+
+def test_retry_alone():
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(f"{src}/Plain")
+    with open(f"{src}/Plain/p.txt", "w") as f:
+        f.write("plain" * 100)
+    eng.tools["rar"], cnt = retry_rar(work, 1)
+    s = run(eng, base_cfg(sources=[src]))
+    log = logtext(eng)
+    check("retry: exit code 8 once, then it works on its own", s["compressed"] == 1 and s["failed"] == 0
+          and len(rars(src)) == 1 and "Retrying on its own" in log and not os.path.exists(f"{src}/Plain"), (s, log[-500:]))
+    shutil.rmtree(work)
+
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(f"{src}/Plain")
+    with open(f"{src}/Plain/p.txt", "w") as f:
+        f.write("plain" * 100)
+    eng.tools["rar"], cnt = retry_rar(work, 99)
+    s = run(eng, base_cfg(sources=[src]))
+    tries = len(open(cnt).read().split())
+    check("retry: fails again -> one final failure, tried exactly twice, folder kept",
+          s["failed"] == 1 and s["compressed"] == 0 and tries == 2 and os.path.isdir(f"{src}/Plain"), (s["failed"], tries))
+    check("retry: final failure is remembered for scheduled scans", list(eng._load_failed()) == [f"{src}/Plain"], eng._load_failed())
+    shutil.rmtree(work)
+
+
+def test_cancel_race():
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(f"{src}/Plain")
+    with open(f"{src}/Plain/p.txt", "w") as f:
+        f.write("plain" * 100)
+    eng._reset_run()
+    eng._slots = [None]
+    i = eng._acquire_slot(f"{src}/Plain")
+    eng.status["state"] = "running"
+    check("cancel: slot dict has cancel=False", eng.snapshot()["slots"][0]["cancel"] is False)
+    eng._enter_finishing(i)
+    check("cancel: finishing entered when not cancelled", eng._slots[i]["phase"] == "finishing")
+    ok, why = eng.cancel_job(f"{src}/Plain")
+    check("cancel: refused once finishing", not ok and "finishing" in why, why)
+    eng._release_slot(i)
+    i = eng._acquire_slot(f"{src}/Plain")
+    ok, _ = eng.cancel_job(f"{src}/Plain")
+    check("cancel: slot dict shows the cancel", ok and eng.snapshot()["slots"][0]["cancel"] is True)
+    try:
+        eng._enter_finishing(i)
+        raised = False
+    except Exception:  # noqa: BLE001
+        raised = True
+    check("cancel: a cancel accepted just before finishing is honoured", raised and eng._slots[i]["phase"] != "finishing")
+    eng.status["state"] = "idle"
+    shutil.rmtree(work)
+
+    # cancel while `rar lt` runs (the file comparison): the listing is killed and nothing changes
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    os.makedirs(f"{src}/Plain")
+    with open(f"{src}/Plain/p.txt", "w") as f:
+        f.write("plain" * 100)
+    p = os.path.join(work, "slowlt.sh")
+    with open(p, "w") as f:
+        f.write(f'#!/bin/bash\nif [ "$1" = lt ]; then sleep 60; exit 0; fi\nexec "{RAR}" "$@"\n')
+    os.chmod(p, 0o755)
+    eng.tools["rar"] = p
+    assert eng.start(base_cfg(sources=[src]), "manual")
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        if [x for x in eng.snapshot()["slots"] if x["path"] == f"{src}/Plain" and x["phase"] == "comparing"]:
+            break
+        time.sleep(0.05)
+    time.sleep(0.3)
+    t0 = time.time()
+    ok, why = eng.cancel_job(f"{src}/Plain")
+    eng.thread.join(30)
+    s = eng.snapshot()
+    check("cancel: during the file comparison it stops quickly and changes nothing",
+          ok and not eng.running and time.time() - t0 < 20 and s["cancelled"] == 1 and s["failed"] == 0
+          and os.path.isfile(f"{src}/Plain/p.txt") and not rars(src), (ok, why, s["cancelled"], s["failed"], time.time() - t0))
+    shutil.rmtree(work)
+
+
+def test_recycle_host_and_partial_delete():
+    import mounts
+    import engine as E
+    work, eng = fresh()
+    share = os.path.join(work, "Media")
+    make_folders(share)
+    real = mounts.list_mounts
+    m = fake_mount(share, "/Media")
+    m["host"] = "/mnt/user/Media"
+    mounts.list_mounts = lambda *a, **k: [m]
+    try:
+        check("mounts: empty before the first run", eng._mounts == [])
+        run(eng, base_cfg(sources=[share], source_action="recycle"))
+    finally:
+        mounts.list_mounts = real
+    check("recycle: mounts refreshed and the server path is logged",
+          eng._mounts and "(on the server: /mnt/user/Media" in logtext(eng), logtext(eng)[-500:])
+    shutil.rmtree(work)
+
+    work, eng = fresh()
+    src = os.path.join(work, "src")
+    make_folders(src)
+    real_rmtree = E.shutil.rmtree
+
+    def half_rmtree(path, *a, **k):
+        if os.path.basename(path) == "My Show":
+            os.remove(os.path.join(path, "big.bin"))
+            raise OSError("simulated failure")
+        return real_rmtree(path, *a, **k)
+
+    E.shutil.rmtree = half_rmtree
+    try:
+        s = run(eng, base_cfg(sources=[src]))
+    finally:
+        E.shutil.rmtree = real_rmtree
+    log = logtext(eng)
+    check("partial delete: says the folder was partly removed", "partly removed" in log and "folder partly removed" in log
+          and os.path.isdir(f"{src}/My Show") and s["compressed"] == 2, log[-600:])
+    shutil.rmtree(work)
+
+
 def test_settings():
     cfg = settings.DEFAULTS
     c, e = settings.validate({**cfg, "sources": ["/a"], "output_dir": "/a/out"})
@@ -545,7 +743,8 @@ def test_settings():
 
 for t in (test_basic_filename_crc, test_sfv_and_none, test_move_output_mirror, test_dry_run_age_and_skips,
           test_volumes_password_excludes, test_safety_nets, test_existing_archives_and_verify, test_parallel,
-          test_future_dates, test_cancel_one_job, test_oneoff_auto, test_oneoff, test_recycle, test_settings):
+          test_future_dates, test_cancel_one_job, test_oneoff_auto, test_oneoff, test_recycle, test_failed_state,
+          test_exclusions_and_dry_run, test_retry_alone, test_cancel_race, test_recycle_host_and_partial_delete, test_settings):
     print(f"--- {t.__name__}")
     try:
         t()
