@@ -6,6 +6,16 @@ Newest first. The latest entries are copied into the Unraid template (shown in C
 - The folder pickers now only show the folders mapped into the container. They open on a list of those folders (without the app data folder), cannot browse anywhere else, and hide links that lead out of them. **Compress folder…** refuses a folder outside them.
 - New **Cancel** button on every folder that is being compressed. It cancels just that folder: the unfinished archive is deleted, the folder is left exactly as it was and the other folders carry on. Scheduled scans leave a cancelled folder alone until it changes; Run now tries it again. Stop still ends the whole run.
 - **Compress folder…** now scans the folder you pick: if it has sub-folders, each sub-folder is compressed into its own archive (instead of the whole folder as one archive). A folder without sub-folders is compressed as a whole.
+- A folder that fails with a RAR out-of-memory, write or disk-space error is retried once on its own after the other folders finish.
+- Cancelling a job just as it starts finishing is no longer ignored, cancel also stops the file-count check, and the Status page shows "cancelling…".
+- The `.Recycle.Bin` folder is never compressed, even if it is removed from the exclude list.
+- A dry run no longer deletes leftover work folders.
+- With the Recycle Bin action, the log shows the bin's path on the server. A delete that fails partway now says the folder was partly removed.
+- The list of failed and cancelled folders can no longer lose entries when several jobs finish at once, and it drops folders that no longer exist.
+- Settings are refused if an output or move folder is inside the app data folder, if a source is inside the output folder, or if a folder is not inside a mapped folder. Invalid saved folders are reset when the settings load; valid ones are kept, and only the invalid source folders are dropped.
+- **Compress folder…** checks the paths you type as you type, and shows a clear message when no folders are mapped.
+- The Waiting list no longer flickers, History shows cancelled counts, the "Folders deleted" statistic is now called "Originals deleted", and the Status tables scroll on narrow screens.
+- Security: HTTP basic auth now counts toward the lockout and failures are logged, malformed requests get a clear error, and parallel statistics saves can no longer corrupt the stats.
 
 ### 2026-11-04
 - Fix: files dated in the future (for example from a timezone mix-up on the computer that wrote them) no longer keep a folder waiting for hours. Their date is ignored and the time they arrived on the server is used. The Waiting card and the log now name the newest changed file, and warn about future-dated items.
