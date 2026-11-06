@@ -1010,9 +1010,17 @@ $("btnSave").addEventListener("click", async () => {
 let pickCb = null, pickPath = "/";
 async function browse(path) {
   const d = await api("/api/browse?path=" + encodeURIComponent(path));
-  pickPath = d.path; $("dlgPath").textContent = d.path;
+  pickPath = d.path;
+  const top = !!d.top;
+  $("dlgPath").textContent = top ? "Mapped folders" : d.path;
+  $("dlgOk").disabled = top;                          // nothing to select until a mapped folder is opened
   const list = $("dlgList"); list.replaceChildren();
-  if (d.parent) list.append(h("div", { onclick: () => browse(d.parent) }, ".. (up)"));
+  if (top) {
+    if (!d.dirs.length) list.append(h("div", { class: "missing" }, "No folders are mapped into this container. Add a Path in the Unraid template (Edit the container) first."));
+    for (const r of d.dirs) list.append(h("div", { onclick: () => browse(r) }, r + "/"));
+    return;
+  }
+  list.append(h("div", { onclick: () => browse(d.parent) }, d.parent === "" ? ".. (mapped folders)" : ".. (up)"));
   for (const n of d.dirs) list.append(h("div", { onclick: () => browse((d.path === "/" ? "" : d.path) + "/" + n) }, n + "/"));
   if (d.error) list.append(h("div", { class: "missing" }, d.error));
 }
@@ -1024,7 +1032,7 @@ function pickFolder(start, cb) {
     sc.append(h("span", {}, "Mapped folders:"));
     for (const m of data) sc.append(h("button", { class: "small", onclick: () => browse(m.path) }, m.path));
   }
-  browse(start).catch(() => browse("/")); $("dlg").showModal();
+  browse(start || "").catch(() => browse("")); $("dlg").showModal();
 }
 $("dlgCancel").addEventListener("click", () => $("dlg").close());
 $("dlgOk").addEventListener("click", () => { if (pickCb) pickCb(pickPath); $("dlg").close(); });

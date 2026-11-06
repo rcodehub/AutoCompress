@@ -73,6 +73,22 @@ def list_mounts(config_dir="/data"):
     return sorted(out, key=lambda m: m["path"])
 
 
+def browse_roots(config_dir="/data", mounts=None):
+    """The folders the folder picker may show: every folder mapped into the container except the app data folder."""
+    mounts = list_mounts(config_dir) if mounts is None else mounts
+    return [m["path"] for m in mounts if not m["config"]]
+
+
+def inside_roots(path, roots):
+    """True when `path` (after following symlinks) is one of the roots or inside one."""
+    real = os.path.realpath(path)
+    for r in roots:
+        r = os.path.realpath(r)
+        if real == r or real.startswith(r.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
 def containing_mount(path, mounts):
     """The mapped folder that holds `path` (longest match), or None."""
     best = None

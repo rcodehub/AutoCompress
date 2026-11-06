@@ -379,6 +379,8 @@ def api_run_folder():
         return jsonify(ok=False, error="Choose an existing folder (a path inside the container)."), 400
     if settings._within(path, settings.CONFIG_DIR):
         return jsonify(ok=False, error="That is the app data folder - choose a folder such as /source."), 400
+    if not mounts.inside_roots(path, mounts.browse_roots(CONFIG_DIR)):
+        return jsonify(ok=False, error="Choose a folder inside one of the folders mapped into the container."), 400
     if engine.running:
         return jsonify(ok=False, error="A scan is already running. Wait for it to finish or stop it first."), 409
     cfg = settings.load()
@@ -421,18 +423,28 @@ def api_history():
 
 @app.route("/api/browse")
 def api_browse():
-    """List sub-folders so the settings page can offer a folder picker."""
-    path = os.path.normpath(request.args.get("path") or "/")
-    if not os.path.isabs(path):
-        path = "/"
+    """List sub-folders for the folder picker. Only the folders mapped into the container can be browsed: anything
+    else gives the virtual top level, which lists the mapped folders themselves (path "" and top: true)."""
+    roots = mounts.browse_roots(CONFIG_DIR)
+    top = jsonify(path="", parent=None, top=True, dirs=roots)
+    raw = request.args.get("path") or ""
+    if not raw or not roots:
+        return top
+    path = os.path.normpath(raw)
+    if not os.path.isabs(path) or not mounts.inside_roots(path, roots):
+        return top
+    is_root = any(os.path.normpath(r) == path for r in roots)
+    parent = "" if is_root else os.path.dirname(path)
     try:
-        # hidden folders (.name) are listed too; only AutoCompress's own work folders are left out
+        # hidden folders (.name) are listed too; only AutoCompress's own work folders and links that lead out of
+        # the mapped folders are left out
         dirs = sorted((e.name for e in os.scandir(path)
-                       if e.is_dir() and not e.name.startswith(".autocompress-")),
+                       if e.is_dir() and not e.name.startswith(".autocompress-")
+                       and (not e.is_symlink() or mounts.inside_roots(e.path, roots))),
                       key=lambda n: (n.lstrip(".").lower(), n))[:2000]
     except OSError as e:
-        return jsonify(path=path, parent=os.path.dirname(path), dirs=[], error=str(e))
-    return jsonify(path=path, parent=os.path.dirname(path) if path != "/" else None, dirs=dirs)
+        return jsonify(path=path, parent=parent, dirs=[], error=str(e))
+    return jsonify(path=path, parent=parent, dirs=dirs)
 
 
 _cfg, _problems, _src = settings.load_with_report()

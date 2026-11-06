@@ -153,6 +153,26 @@ d = c.get("/api/browse?path=" + dl).get_json()
 check("browse: hidden folders listed, work folders not", ".hidden" in d["dirs"] and "Visible" in d["dirs"]
       and not any(x.startswith(".autocompress-") for x in d["dirs"]), d)
 
+# --- the picker only shows mapped folders
+d = c.get("/api/browse").get_json()
+check("browse: top level lists only the mapped folders (not app data)",
+      d["top"] and d["path"] == "" and sorted(d["dirs"]) == sorted([dl, proc, media]) and cfg not in d["dirs"], d)
+check("browse: an unmapped path gives the top level", c.get("/api/browse?path=/etc").get_json()["top"]
+      and c.get("/api/browse?path=/").get_json()["top"] and c.get("/api/browse?path=" + cfg).get_json()["top"])
+check("browse: a path that only starts like a mapped folder is not inside it", c.get("/api/browse?path=" + dl + "-other").get_json()["top"])
+d = c.get("/api/browse?path=" + dl).get_json()
+check("browse: a mapped folder's parent is the top level", d["parent"] == "" and not d.get("top"), d)
+d = c.get("/api/browse?path=" + dl + "/Visible").get_json()
+check("browse: inside a mapped folder goes up normally", d["parent"] == dl and not d.get("top"), d)
+os.symlink("/etc", os.path.join(dl, "escape"))
+os.symlink(os.path.join(dl, "Visible"), os.path.join(dl, "inside-link"))
+d = c.get("/api/browse?path=" + dl).get_json()
+check("browse: links that lead out of the mapped folders are hidden, links inside stay",
+      "escape" not in d["dirs"] and "inside-link" in d["dirs"], d["dirs"])
+check("browse: cannot walk out through a link", c.get("/api/browse?path=" + dl + "/escape").get_json()["top"])
+r = c.post("/api/run-folder", json={"path": "/etc", "dry_run": True})
+check("run-folder: refuses a folder outside the mapped folders", r.status_code == 400 and "mapped" in r.get_json()["error"], r.get_json())
+
 # --- clear the on-screen log
 main.engine.log("info", "something")
 check("log: has entries", c.get("/api/log?after=0").get_json()["entries"])

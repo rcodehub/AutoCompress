@@ -3,6 +3,7 @@
 Newest first. The latest entries are copied into the Unraid template (shown in Community Applications) each time an image is published.
 
 ### 2026-11-06
+- The folder pickers now only show the folders mapped into the container. They open on a list of those folders (without the app data folder), cannot browse anywhere else, and hide links that lead out of them. **Compress folder…** refuses a folder outside them.
 - New **Cancel** button on every folder that is being compressed. It cancels just that folder: the unfinished archive is deleted, the folder is left exactly as it was and the other folders carry on. Scheduled scans leave a cancelled folder alone until it changes; Run now tries it again. Stop still ends the whole run.
 - **Compress folder…** now scans the folder you pick: if it has sub-folders, each sub-folder is compressed into its own archive (instead of the whole folder as one archive). A folder without sub-folders is compressed as a whole.
 
